@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>日常甘特</title>
+  <meta name="description" content="把任務拆細的日常甘特圖，手機、平板、電腦都能用。">
+  <meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="日常甘特">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="modulepreload" href="js/core.js">
+  <link rel="modulepreload" href="js/ui.js">
+  <link rel="modulepreload" href="js/store.js">
+  <link rel="modulepreload" href="js/sync.js">
+  <link rel="modulepreload" href="js/sheet.js">
+  <link rel="modulepreload" href="js/views.js">
+  <link rel="modulepreload" href="js/gantt.js">
+  <script>
+    // Set the theme before first paint so dark mode never flashes white.
+    try {
+      var t = JSON.parse(localStorage.getItem('dg.prefs.v1') || '{}').theme;
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <div class="app">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main id="main" class="main"></main>
+    <nav id="tabbar" class="tabbar" aria-label="主選單"></nav>
+  </div>
+  <dialog id="sheet" class="sheet" aria-label="任務內容"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <input id="file-input" type="file" hidden>
+  <noscript>這個工具需要啟用 JavaScript。</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
