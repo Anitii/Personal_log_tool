@@ -1,14 +1,15 @@
 // Gantt view. Geometry is plain date→pixel arithmetic; while dragging, only the affected
 // bars are touched inside requestAnimationFrame and state changes once on release.
 import {
-  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtMD, fmtRange, fromDay, mondayOf, percent, shiftTask,
+  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtMD, fmtRange, fromDay, inkOn, mondayOf, percent, shiftTask,
   statusOf, subStatusOf, toDay, todayStr, weekNumber, weekdayIdx,
 } from './core.js';
 import { commit, getProject, getTask, prefs, setPref, state, touch, visibleTasks } from './store.js';
 import { actions, changes, esc, icon } from './ui.js';
-import { chipsHTML, emptyHTML, headerHTML } from './views.js';
+import { chipsHTML, emptyHTML, headerHTML, planSegHTML } from './views.js';
 
-const ZOOM = { day: { w: 44, phone: 38 }, week: { w: 24, phone: 18 }, month: { w: 7, phone: 6 } };
+// Week scale shows every day; month scale shows whole weeks, grouped by month.
+const ZOOM = { week: { w: 44, phone: 38 }, month: { w: 11, phone: 9 } };
 const ROW_H = 48;
 const SUB_H = 38;
 const NARROW = 768;
@@ -35,7 +36,7 @@ function layout() {
     phone,
     canDetail,
     detail,
-    dayW: phone ? ZOOM[prefs.zoom].phone : ZOOM[prefs.zoom].w,
+    dayW: phone ? ZOOM[prefs.plan].phone : ZOOM[prefs.plan].w,
     labelW: detail ? 500 : phone ? 136 : 228,
   };
 }
@@ -69,7 +70,13 @@ function placeBar(el, startDay, endDay) {
   el.style.width = `${g.width}px`;
 }
 
-function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rangeLabel }) {
+// A task's own color always wins; otherwise bars follow status, or the project if chosen.
+function barColorStyle(t) {
+  const c = t.color || (prefs.barColor === 'project' ? getProject(t.projectId)?.color : '');
+  return c ? `--st:${esc(c)};--ink:${inkOn(c)};` : '';
+}
+
+function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rangeLabel, colorStyle = '' }) {
   const s = toDay(start);
   const e = toDay(end);
   const common = `data-bar data-act="open-task" data-id="${esc(taskId)}" ${subId ? `data-sub="${esc(subId)}" data-focus-sub="${esc(subId)}"` : ''} role="button" tabindex="0"
@@ -77,11 +84,11 @@ function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rang
   if (s === e) {
     const size = isSub ? 13 : 17;
     const left = (s - view.start) * view.dayW + view.dayW / 2 - size / 2;
-    return `<div class="bar diamond s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="left:${left}px;width:${size}px;height:${size}px" ${common}></div>`;
+    return `<div class="bar diamond s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="${colorStyle}left:${left}px;width:${size}px;height:${size}px" ${common}></div>`;
   }
   const g = barGeom(s, e);
   const fits = !isSub && g.width > title.length * 13 + 18;
-  return `<div class="bar s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="left:${g.left}px;width:${g.width}px" ${common}>
+  return `<div class="bar s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="${colorStyle}left:${g.left}px;width:${g.width}px" ${common}>
     ${pct > 0 && pct < 100 ? `<i class="bar-fill" style="width:${pct}%"></i>` : ''}
     ${fits ? `<span class="bar-text">${esc(title)}</span>` : ''}
   </div>`;
@@ -111,7 +118,7 @@ function headerRows(l, today) {
   const { start, days } = view;
   const { dayW } = l;
   let groups = '';
-  if (prefs.zoom === 'month') {
+  if (prefs.plan === 'month') {
     let i = 0;
     while (i < days) {
       const iso = fromDay(start + i);
@@ -129,7 +136,7 @@ function headerRows(l, today) {
   }
 
   let cells = '';
-  if (prefs.zoom === 'month') {
+  if (prefs.plan === 'month') {
     for (let i = 0; i < days; i += 7) {
       const isThisWeek = today >= start + i && today < start + i + 7;
       cells += `<div class="g-day week-cell ${isThisWeek ? 'is-today-week' : ''}" style="width:${7 * dayW}px">${fmtMD(fromDay(start + i))}</div>`;
@@ -140,14 +147,14 @@ function headerRows(l, today) {
       const wd = weekdayIdx(n);
       const dateNum = Number(fromDay(n).slice(8));
       cells += `<div class="g-day ${wd === 5 ? 'sat' : wd === 6 ? 'sun' : ''} ${n === today ? 'is-today' : ''}" style="width:${dayW}px">
-        <small>${WEEKDAYS[wd]}</small>${prefs.zoom === 'day' || n === today ? `<b>${dateNum}</b>` : `<b class="thin">${dateNum}</b>`}</div>`;
+        <small>${WEEKDAYS[wd]}</small><b>${dateNum}</b></div>`;
     }
   }
   return { groups, cells };
 }
 
 function weekendStripes(l) {
-  if (prefs.zoom === 'month') return '';
+  if (prefs.plan === 'month') return '';
   let html = '';
   const first = view.start; // always a Monday
   for (let i = 5; i < view.days; i += 7) {
@@ -165,16 +172,14 @@ export function renderGantt(main) {
   const r = range(state.tasks, today);
   view = { ...r, dayW: l.dayW, labelW: l.labelW };
 
-  const zoomSeg = [['day', '日'], ['week', '週'], ['month', '月']].map(([k, label]) =>
-    `<button type="button" class="${prefs.zoom === k ? 'on' : ''}" data-act="gantt-zoom" data-v="${k}" aria-pressed="${prefs.zoom === k}">${label}</button>`).join('');
-
   const menu = gantt.menuOpen ? `<div class="menu" role="menu">
       ${l.canDetail ? `<label class="menu-item">精簡模式：只看行動事項<input type="checkbox" class="switch" data-ch="gantt-compact" ${prefs.compact ? 'checked' : ''}></label>` : ''}
       <label class="menu-item">隱藏已完成<input type="checkbox" class="switch" data-ch="hide-done" ${prefs.hideDone ? 'checked' : ''}></label>
       <label class="menu-item">依開始日期排序<input type="checkbox" class="switch" data-ch="gantt-sort" ${prefs.sort === 'start' ? 'checked' : ''}></label>
+      <label class="menu-item">色條依專案上色<input type="checkbox" class="switch" data-ch="gantt-bar-color" ${prefs.barColor === 'project' ? 'checked' : ''}></label>
     </div>` : '';
 
-  const trailing = `<button type="button" class="text-btn today-btn" data-act="gantt-today">今天</button>
+  const trailing = `<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>
     <div class="menu-wrap"><button type="button" class="btn-circle" data-act="gantt-menu" aria-label="顯示選項" aria-expanded="${gantt.menuOpen}">${icon.more}</button>${menu}</div>`;
 
   const legend = `<div class="legend" aria-label="圖例">
@@ -185,8 +190,8 @@ export function renderGantt(main) {
 
   const week = weekNumber(today, state.settings);
   const headHTML = `<div class="g-head-wrap">
-      ${headerHTML('甘特圖', `本週第 ${week} 週`, trailing)}
-      <div class="g-controls"><div class="seg" role="group" aria-label="時間刻度">${zoomSeg}</div>${chipsHTML()}</div>
+      ${headerHTML('計畫', `本週第 ${week} 週`, trailing)}
+      <div class="g-controls">${planSegHTML()}${chipsHTML()}</div>
     </div>`;
 
   if (!state.tasks.length) {
@@ -208,7 +213,7 @@ export function renderGantt(main) {
     rows.push(`<div class="g-row is-task" style="height:${ROW_H}px" data-task="${esc(t.id)}">
       ${labelHTML(t, st, pct, l)}
       <div class="g-track" style="width:${tw}px" ${dated ? '' : `data-act="gantt-set-date" data-id="${esc(t.id)}"`}>
-        ${dated ? barHTML({ taskId: t.id, title: t.title, start: t.start, end: t.end, st, pct, range: fmtRange(t.start, t.end) }) : `<span class="g-hint" style="left:${(today - r.start) * l.dayW + 6}px">${t.start || t.end ? '日期有誤，點此重設' : '點時間軸設定日期'}</span>`}
+        ${dated ? barHTML({ taskId: t.id, title: t.title, start: t.start, end: t.end, st, pct, range: fmtRange(t.start, t.end), colorStyle: barColorStyle(t) }) : `<span class="g-hint" style="left:${(today - r.start) * l.dayW + 6}px">${t.start || t.end ? '日期有誤，點此重設' : '點時間軸設定日期'}</span>`}
       </div>
     </div>`);
     if (t.subtasks.length && !prefs.collapsed[t.id]) {
@@ -218,7 +223,7 @@ export function renderGantt(main) {
         rows.push(`<div class="g-row is-sub" style="height:${SUB_H}px">
           <div class="g-label sub-label"><button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
             <span class="g-name ${s.done ? 'struck' : ''}">${esc(s.title) || '<em>未命名子任務</em>'}</span></button></div>
-          <div class="g-track" style="width:${tw}px">${sDated ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: s.start, end: s.end, st: sst, pct: 0, isSub: true, range: fmtRange(s.start, s.end) }) : ''}</div>
+          <div class="g-track" style="width:${tw}px">${sDated ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: s.start, end: s.end, st: sst, pct: 0, isSub: true, range: fmtRange(s.start, s.end), colorStyle: barColorStyle(t) }) : ''}</div>
         </div>`);
       }
     }
@@ -237,11 +242,11 @@ export function renderGantt(main) {
           <div class="g-corner"><span class="g-corner-title">行動事項</span>${detailHead}</div>
           <div class="g-head-time" style="width:${tw}px">
             <div class="g-groups">${groups}</div>
-            <div class="g-days ${prefs.zoom}">${cells}</div>
+            <div class="g-days ${prefs.plan}">${cells}</div>
           </div>
         </div>
         <div class="g-body">
-          <div class="g-bg ${prefs.zoom}" aria-hidden="true">${weekendStripes(l)}${showToday ? `<i class="g-now" style="left:${(today - r.start) * l.dayW + l.dayW / 2}px"></i>` : ''}</div>
+          <div class="g-bg ${prefs.plan}" aria-hidden="true">${weekendStripes(l)}${showToday ? `<i class="g-now" style="left:${(today - r.start) * l.dayW + l.dayW / 2}px"></i>` : ''}</div>
           ${rows.join('') || '<div class="g-none">這個篩選條件下沒有任務</div>'}
           <div class="g-row g-add" style="height:${ROW_H}px"><div class="g-label"><button type="button" class="g-add-btn" data-act="new-task">${icon.plus}<span>新增任務</span></button></div><div class="g-track" style="width:${tw}px"></div></div>
         </div>
@@ -287,13 +292,6 @@ export const setGanttRender = (fn) => (requestRender = fn);
 /* ---------- Actions ---------- */
 
 Object.assign(actions, {
-  'gantt-zoom': (el) => {
-    setPref({ zoom: el.dataset.v });
-  },
-  'gantt-today': () => {
-    gantt.pendingToday = true;
-    requestRender();
-  },
   'gantt-menu': () => {
     gantt.menuOpen = !gantt.menuOpen;
     requestRender();
@@ -320,6 +318,7 @@ Object.assign(actions, {
 Object.assign(changes, {
   'gantt-compact': (el) => setPref({ compact: el.checked }),
   'gantt-sort': (el) => setPref({ sort: el.checked ? 'start' : 'manual' }),
+  'gantt-bar-color': (el) => setPref({ barColor: el.checked ? 'project' : 'status' }),
 });
 
 /* ---------- Direct manipulation ---------- */

@@ -1,4 +1,5 @@
-// Shared DOM helpers: escaping, event delegation, icons, toast.
+// Shared DOM helpers: escaping, event delegation, icons, toast, color picker.
+import { PALETTE } from './core.js';
 
 export const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -30,7 +31,25 @@ export const icon = {
   note: stroke('<path d="M5 5h14v10l-5 5H5z"/><path d="M14 20v-5h5"/>'),
   link: stroke('<path d="M10 14a4 4 0 0 0 6 .4l3-3a4.2 4.2 0 0 0-6-6l-1.4 1.4"/><path d="M14 10a4 4 0 0 0-6-.4l-3 3a4.2 4.2 0 0 0 6 6l1.4-1.4"/>'),
   back: stroke('<path d="M15 5.5L8.5 12l6.5 6.5"/>', 'stroke-width="2.4"'),
+  book: stroke('<path d="M6 3.5h13.5V20H6.5A2.5 2.5 0 0 1 4 17.5V5.5a2 2 0 0 1 2-2z"/><path d="M4 17.5A2.5 2.5 0 0 1 6.5 15h13M9 8h6"/>'),
+  share: stroke('<path d="M12 15V4M8 7.5l4-4 4 4"/><path d="M7 11H5.5A1.5 1.5 0 0 0 4 12.5v6A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-6a1.5 1.5 0 0 0-1.5-1.5H17"/>'),
+  star: stroke('<path d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>'),
+  starOn: stroke('<path fill="currentColor" d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>'),
 };
+
+// Macaron swatches plus the system color picker. `auto` adds "follow the default".
+export function colorRowHTML({ value, target, id = '', auto = false }) {
+  const attrs = `data-target="${esc(target)}" data-id="${esc(id)}"`;
+  const lower = (value || '').toLowerCase();
+  const custom = lower && !PALETTE.some((c) => c.toLowerCase() === lower);
+  return `<div class="color-row" role="group" aria-label="選擇顏色">
+    ${auto ? `<button type="button" class="swatch auto ${value ? '' : 'on'}" data-act="pick-color" ${attrs} data-v="" aria-label="預設顏色" title="預設顏色"></button>` : ''}
+    ${PALETTE.map((c) => `<button type="button" class="swatch ${c.toLowerCase() === lower ? 'on' : ''}" style="background:${c}" data-act="pick-color" ${attrs} data-v="${c}" aria-label="顏色 ${c}"></button>`).join('')}
+    <label class="swatch custom ${custom ? 'on' : ''}" title="自訂顏色" ${custom ? `style="background:${esc(value)}"` : ''}>
+      <input type="color" value="${esc(value || '#D9C2AB')}" data-ch="pick-color-custom" ${attrs} aria-label="自訂顏色">
+    </label>
+  </div>`;
+}
 
 export function initDelegation({ beforeClick } = {}) {
   document.addEventListener('click', (e) => {
@@ -64,10 +83,10 @@ export function initDelegation({ beforeClick } = {}) {
 }
 
 let toastTimer = 0;
-export function toast(message, undo) {
+export function toast(message, undo, label = '復原') {
   const el = document.getElementById('toast');
   clearTimeout(toastTimer);
-  el.innerHTML = `<span>${esc(message)}</span>${undo ? '<button type="button" class="toast-undo">復原</button>' : ''}`;
+  el.innerHTML = `<span>${esc(message)}</span>${undo ? `<button type="button" class="toast-undo">${esc(label)}</button>` : ''}`;
   el.classList.add('show');
   if (undo) {
     el.querySelector('button').onclick = () => {

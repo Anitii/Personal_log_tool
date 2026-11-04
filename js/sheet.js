@@ -3,9 +3,10 @@ import {
   STATUS, clampSubsToParent, fitParentToSubs, fmtRange, makeSub, makeTask, newId, percent, statusOf, subStatusOf, todayStr,
 } from './core.js';
 import { commit, deleteTask, getTask, state, touch } from './store.js';
-import { actions, changes, enters, esc, icon, inputs } from './ui.js';
+import { actions, changes, colorRowHTML, enters, esc, icon, inputs } from './ui.js';
 
 let current = null; // { id, isNew }
+let panelClose = null;
 const openSubs = new Set();
 
 const sheet = () => document.getElementById('sheet');
@@ -81,6 +82,7 @@ export function openTask(id, { isNew = false, focusSub } = {}) {
   const t = getTask(id);
   if (!t) return;
   current = { id, isNew };
+  panelClose = null;
   openSubs.clear();
   if (focusSub) openSubs.add(focusSub);
   const prioLabels = ['無', '低', '中', '高'];
@@ -108,7 +110,11 @@ export function openTask(id, { isNew = false, focusSub } = {}) {
             `<button type="button" class="${t.priority === i ? 'on' : ''}" data-act="sheet-priority" data-v="${i}" aria-pressed="${t.priority === i}">${l}</button>`).join('')}</div></div>
       </div>
 
-      <div class="card">
+      <h3 class="group-head in-sheet">顏色</h3>
+      <div class="card pad">${colorRowHTML({ value: t.color, target: 'task', id: t.id, auto: true })}</div>
+      <p class="group-foot">預設跟隨專案的顏色。優先度設為「高」的任務，月曆上每天都算最重要。</p>
+
+      <div class="card sheet-gap">
         <label class="row form-row"><span class="form-label">開始日期</span><input id="sheet-start" type="date" class="field-date" value="${esc(t.start || '')}" data-ch="sheet-start"></label>
         <label class="row form-row"><span class="form-label">結束日期</span><input id="sheet-end" type="date" class="field-date" value="${esc(t.end || '')}" data-ch="sheet-end"></label>
         <div class="row form-row progress-row">
@@ -150,6 +156,23 @@ export function openTask(id, { isNew = false, focusSub } = {}) {
   else if (document.activeElement && document.activeElement !== root) document.activeElement.blur();
 }
 
+// The same sheet, holding something other than a task: a time block, a day, an export.
+export function openPanel(title, html, { onClose = null } = {}) {
+  const root = sheet();
+  const previous = root.querySelector('.sheet-scroll')?.scrollTop || 0;
+  current = null;
+  panelClose = onClose;
+  root.innerHTML = `<div class="sheet-inner">
+    <div class="grabber" data-grab aria-hidden="true"><i></i></div>
+    <div class="sheet-bar"><b class="sheet-title">${esc(title)}</b><button type="button" class="text-btn strong" data-act="sheet-close">完成</button></div>
+    <div class="sheet-scroll">${html}</div>
+  </div>`;
+  root.classList.remove('closing');
+  root.style.transform = '';
+  if (!root.open) root.showModal();
+  root.querySelector('.sheet-scroll').scrollTop = previous;
+}
+
 function fitTitle() {
   const el = sheet().querySelector('#sheet-title');
   if (!el) return;
@@ -160,6 +183,8 @@ function fitTitle() {
 export function closeSheet() {
   const root = sheet();
   if (!root.open) return;
+  panelClose?.();
+  panelClose = null;
   const t = task();
   const discard = current?.isNew && t && !t.title.trim() && !t.subtasks.length;
   const id = current?.id;

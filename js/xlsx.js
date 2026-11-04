@@ -164,7 +164,7 @@ export function applyWorkbook(parsed) {
         s.tasks.push(makeTask({ title: t.title, projectId: projectId(t.project), start: t.start, end: t.end, progress: t.progress, notes: t.notes, order: now + i }));
       });
       if (parsed.baseMonday && parsed.baseWeek != null) {
-        s.settings = { baseMonday: parsed.baseMonday, baseWeek: parsed.baseWeek, updatedAt: now };
+        s.settings = { ...s.settings, baseMonday: parsed.baseMonday, baseWeek: parsed.baseWeek, updatedAt: now };
       }
     },
     { undo: fresh.length ? `已匯入 ${fresh.length} 項任務` : '沒有新任務，全部都已存在' },

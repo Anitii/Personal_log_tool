@@ -1,9 +1,11 @@
 // App state: one normalized document, persisted to localStorage, shared by every view.
-import { addDays, defaultState, makeSub, makeTask, normalize, statusOf, todayStr } from './core.js';
+import { DATA_VERSION, addDays, defaultState, makeSub, makeTask, merge, normalize, sameDocument, statusOf, todayStr } from './core.js';
 import { toast } from './ui.js';
 
 const DATA_KEY = 'dg.data.v1';
 const PREFS_KEY = 'dg.prefs.v1';
+const BACKUP_KEY = 'dg.data.before-v2';
+const LAYERS_KEY = 'dg.data.layers';
 
 function readJSON(key) {
   try {
@@ -13,15 +15,36 @@ function readJSON(key) {
   }
 }
 
-export let state = normalize(readJSON(DATA_KEY) || defaultState());
+// Upgrades keep the same storage key. A copy of the old document stays beside it as a safety net.
+const saved = readJSON(DATA_KEY);
+if (saved && !(saved.version >= DATA_VERSION) && localStorage.getItem(BACKUP_KEY) === null) {
+  try {
+    localStorage.setItem(BACKUP_KEY, JSON.stringify(saved));
+  } catch { /* the upgrade itself drops nothing, so this copy is only extra safety */ }
+}
+
+// A tab still running the first version rewrites the document without the time table and
+// diary it has never heard of. This copy brings them back.
+if (saved && !(saved.version >= DATA_VERSION)) {
+  const layers = readJSON(LAYERS_KEY);
+  if (layers) Object.assign(saved, { blocks: layers.blocks, diary: layers.diary });
+}
+
+export let state = normalize(saved || defaultState());
 
 // Per-device view preferences. These are not synced.
 export const prefs = {
-  view: 'today', zoom: 'day', compact: false, hideDone: false, sort: 'manual', group: 'project',
-  project: '', status: '', theme: 'system', collapsed: {}, expanded: {},
+  view: 'today', plan: 'week', compact: false, hideDone: false, sort: 'manual', group: 'project',
+  project: '', status: '', theme: 'system', collapsed: {}, expanded: {}, barColor: 'status', calDim: true,
   ...readJSON(PREFS_KEY),
 };
+// The first version's zoom setting becomes the plan scale; its day zoom is now the time table.
+if (prefs.zoom === 'month') prefs.plan = 'month';
+delete prefs.zoom;
 prefs.status = ''; // a status filter is a one-off drill-down, not a saved view
+
+// Which day the planner and the diary are showing; null means today.
+export const focusDate = { plan: null, diary: null };
 
 const listeners = new Set();
 export const subscribe = (fn) => listeners.add(fn);
@@ -35,11 +58,28 @@ function persistNow() {
   persistTimer = 0;
   try {
     localStorage.setItem(DATA_KEY, JSON.stringify(state));
+    localStorage.setItem(LAYERS_KEY, JSON.stringify({ blocks: state.blocks, diary: state.diary }));
   } catch {
     toast('無法儲存到這個瀏覽器，請先匯出備份');
   }
 }
 window.addEventListener('pagehide', () => persistTimer && persistNow());
+
+// Another tab saved. Merge rather than adopt, so neither tab's latest work is overwritten.
+window.addEventListener('storage', (e) => {
+  if (e.key !== DATA_KEY || !e.newValue) return;
+  let incoming;
+  try {
+    incoming = normalize(JSON.parse(e.newValue));
+  } catch {
+    return;
+  }
+  const merged = merge(state, incoming);
+  const differs = !sameDocument(merged, incoming);
+  state = merged;
+  if (differs) persistNow(); // the other tab is behind, or dropped something it doesn't know
+  notify();
+});
 
 export function savePrefs() {
   try {
@@ -67,14 +107,19 @@ export function commit(fn, { undo } = {}) {
 
 // Restored items get a fresh timestamp, otherwise sync would treat them as older
 // than the deletion or edit being undone and bring that back.
-function restore(snapshot) {
-  const previous = new Map(state.tasks.map((t) => [t.id, JSON.stringify(t)]));
+// Undoing a task change must not rewind diary text typed since then, so only an undo that
+// replaced the whole document brings the diary back too.
+function restore(snapshot, { withDiary = false } = {}) {
   const next = normalize(JSON.parse(snapshot));
+  if (!withDiary) next.diary = state.diary;
   const now = Date.now();
-  for (const t of next.tasks) {
-    if (previous.get(t.id) !== JSON.stringify(t)) {
-      t.updatedAt = now;
-      delete next.deleted[t.id];
+  for (const key of ['tasks', 'blocks', 'diary']) {
+    const previous = new Map(state[key].map((x) => [x.id, JSON.stringify(x)]));
+    for (const x of next[key]) {
+      if (previous.get(x.id) !== JSON.stringify(x)) {
+        x.updatedAt = now;
+        delete next.deleted[x.id];
+      }
     }
   }
   state = next;
@@ -92,7 +137,7 @@ export function replaceAll(next, { undo } = {}) {
   const before = undo ? JSON.stringify(state) : null;
   state = normalize(next);
   commit(() => {});
-  if (undo) toast(undo, () => restore(before));
+  if (undo) toast(undo, () => restore(before, { withDiary: true }));
 }
 
 export function requestPersistentStorage() {
@@ -133,6 +178,32 @@ export function addTask(fields) {
     s.tasks.push(t);
     return t;
   });
+}
+
+export function saveDiary(date, body) {
+  commit((s) => {
+    const entry = s.diary.find((d) => d.date === date);
+    if (entry) {
+      entry.body = body;
+      entry.updatedAt = Date.now();
+    } else s.diary.push({ id: `diary-${date}`, date, body, updatedAt: Date.now() });
+  });
+}
+
+export const diaryBody = (date) => state.diary.find((d) => d.date === date)?.body || '';
+
+export const taskColor = (t) => t?.color || getProject(t?.projectId)?.color || '';
+
+// A block shows its task's current name and color; its own title is the fallback once the
+// task has been deleted.
+export function blockInfo(b) {
+  const t = b.taskId ? getTask(b.taskId) : null;
+  const sub = t && b.subId ? t.subtasks.find((s) => s.id === b.subId) : null;
+  return {
+    title: sub?.title || t?.title || b.title || '未命名時段',
+    color: b.color || taskColor(t) || '',
+    task: t,
+  };
 }
 
 export function deleteTask(id, { silent } = {}) {

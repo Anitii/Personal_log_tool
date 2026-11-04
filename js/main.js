@@ -3,8 +3,11 @@ import { getProject, prefs, requestPersistentStorage, setPref, state, subscribe 
 import { gantt, initGanttDrag, renderGantt, setGanttRender, shouldSuppressClick } from './gantt.js';
 import { initSheet } from './sheet.js';
 import { initSync, onSyncStatus, syncStatus } from './sync.js';
-import { actions, esc, icon, initDelegation } from './ui.js';
-import { applyTheme, refreshSyncLine, renderSettings, renderTasks, renderToday, setRerender, shell } from './views.js';
+import { actions, esc, icon, initDelegation, toast } from './ui.js';
+import { applyStatusColors, applyTheme, refreshSyncLine, renderSettings, renderTasks, renderToday, setRerender, shell } from './views.js';
+import { initPlannerGestures, planToday, plannerSuppressClick, renderPlanner, setPlannerRender } from './planner.js';
+import { calendarToday, renderCalendar, setCalendarRender } from './calendar.js';
+import { renderDiary, setDiaryRender } from './diary.js';
 
 const main = document.getElementById('main');
 const sidebar = document.getElementById('sidebar');
@@ -12,7 +15,8 @@ const tabbar = document.getElementById('tabbar');
 
 const TABS = [
   ['today', '今天', icon.today],
-  ['gantt', '甘特圖', icon.gantt],
+  ['gantt', '計畫', icon.gantt],
+  ['diary', '日記', icon.book],
   ['tasks', '任務', icon.list],
   ['settings', '設定', icon.gear],
 ];
@@ -47,6 +51,7 @@ function render() {
   raf = 0;
   if (gantt.dragging) return; // finishing the drag requests a fresh render
 
+  applyStatusColors();
   renderChrome();
 
   const before = main.querySelector('.view-body');
@@ -56,10 +61,16 @@ function render() {
   const kept = new Map();
   main.querySelectorAll('[data-keep]').forEach((el) => kept.set(el.dataset.keep, el.value));
   const focused = document.activeElement?.dataset?.keep || shell.refocus;
+  const caret = document.activeElement?.dataset?.keep ? document.activeElement.selectionStart : null;
   shell.refocus = null;
 
   switch (prefs.view) {
-    case 'gantt': renderGantt(main); break;
+    case 'gantt':
+      if (prefs.plan === 'day') renderPlanner(main);
+      else if (prefs.plan === 'cal') renderCalendar(main);
+      else renderGantt(main);
+      break;
+    case 'diary': renderDiary(main); break;
     case 'tasks': main.innerHTML = renderTasks(); break;
     case 'settings': main.innerHTML = renderSettings(); break;
     default: main.innerHTML = renderToday();
@@ -71,7 +82,11 @@ function render() {
     const el = main.querySelector(`[data-keep="${CSS.escape(key)}"]`);
     if (el) el.value = value;
   }
-  if (focused) main.querySelector(`[data-keep="${CSS.escape(focused)}"]`)?.focus();
+  if (focused) {
+    const el = main.querySelector(`[data-keep="${CSS.escape(focused)}"]`);
+    el?.focus();
+    if (el && caret != null) el.setSelectionRange(caret, caret);
+  }
 
   if (prefs.view !== lastView) {
     if (lastView !== null) main.firstElementChild?.classList.add('enter');
@@ -110,9 +125,17 @@ Object.assign(actions, {
     if (prefs.view === 'gantt' && el.dataset.v !== 'gantt') gantt.menuOpen = false;
     setPref({ view: el.dataset.v, status: '' });
   },
+  'plan-today': () => {
+    if (prefs.plan === 'day') planToday();
+    else if (prefs.plan === 'cal') calendarToday();
+    else {
+      gantt.pendingToday = true;
+      schedule();
+    }
+  },
   'side-project': (el) => {
     const id = el.dataset.id;
-    const view = prefs.view === 'today' || prefs.view === 'settings' ? 'tasks' : prefs.view;
+    const view = ['today', 'settings', 'diary'].includes(prefs.view) ? 'tasks' : prefs.view;
     setPref({ project: prefs.project === id ? '' : id, view });
   },
 });
@@ -122,6 +145,7 @@ function init() {
   initDelegation({
     beforeClick: (e) => {
       if (shouldSuppressClick() && e.target.closest('[data-bar]')) return false;
+      if (plannerSuppressClick() && e.target.closest('.day-view')) return false;
       if (gantt.menuOpen && !e.target.closest('.menu-wrap')) {
         gantt.menuOpen = false;
         schedule();
@@ -131,8 +155,12 @@ function init() {
   });
   initSheet();
   initGanttDrag();
+  initPlannerGestures();
   setRerender(schedule);
   setGanttRender(schedule);
+  setPlannerRender(schedule);
+  setCalendarRender(schedule);
+  setDiaryRender(schedule);
   subscribe(schedule);
   onSyncStatus(() => {
     refreshSyncLine();
@@ -145,6 +173,12 @@ function init() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') schedule();
   });
+
+  // The "now" markers keep moving while the page sits open.
+  setInterval(() => {
+    const live = prefs.view === 'today' || (prefs.view === 'gantt' && prefs.plan === 'day');
+    if (live && document.visibilityState === 'visible' && !gantt.dragging) schedule();
+  }, 60000);
 
   let resizeTimer = 0;
   window.addEventListener('resize', () => {
@@ -160,17 +194,22 @@ function init() {
       schedule();
     }
     if (typing || document.getElementById('sheet').open) return;
-    const map = { 1: 'today', 2: 'gantt', 3: 'tasks', 4: 'settings' };
+    const map = { 1: 'today', 2: 'gantt', 3: 'diary', 4: 'tasks', 5: 'settings' };
     if (map[e.key]) setPref({ view: map[e.key], status: '' });
     else if (e.key === 'n' || e.key === 'N') {
       e.preventDefault();
       actions['new-task']();
-    } else if ((e.key === 't' || e.key === 'T') && prefs.view === 'gantt') actions['gantt-today']();
+    } else if ((e.key === 't' || e.key === 'T') && prefs.view === 'gantt') actions['plan-today']();
   });
 
   render();
 
   if ('serviceWorker' in navigator && location.hostname !== 'localhost') {
+    let hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController) toast('新版本已就緒', () => location.reload(), '重新整理');
+      hadController = true;
+    });
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 }

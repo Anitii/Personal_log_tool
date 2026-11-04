@@ -1,17 +1,20 @@
 // Today, Tasks and Settings views, plus the row markup they share.
 import {
-  PALETTE, STATUS, WEEKDAYS, addDays, fitParentToSubs, fmtRange, makeSub, newId, normalize, percent, setDone,
-  statusOf, subStatusOf, toCSV, toDay, todayStr, weekNumber, weekdayIdx,
+  DAY_MINUTES, DEFAULT_STATUS_COLORS, FREE_BLOCK_COLOR, PALETTE, STATUS, WEEKDAYS, addDays, blocksOn, deferTask, fitParentToSubs, fmtDuration,
+  fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isImportant, makeSub, mondayOf, newId, normalize, percent, plannedMinutes, setDone,
+  statusOf, subStatusOf, tasksForDay, toCSV, toDay, todayStr, toggleFocusDay, weekNumber, weekdayIdx,
 } from './core.js';
+import { plainPreview } from './markdown.js';
 import {
-  addTask, commit, getProject, getTask, loadSample, prefs, replaceAll, setPref, state, touch, visibleTasks,
+  addTask, blockInfo, commit, diaryBody, focusDate, getProject, getTask, loadSample, prefs, replaceAll, saveDiary, setPref, state, touch, visibleTasks,
 } from './store.js';
 import { connect, disconnect, syncNow, syncStatus } from './sync.js';
-import { actions, changes, download, enters, esc, icon, inputs, toast } from './ui.js';
+import { actions, changes, colorRowHTML, download, enters, esc, icon, inputs, toast } from './ui.js';
 import { openTask } from './sheet.js';
 
 export const shell = {
   refocus: null, // data-keep key to put the caret back in after the next render
+  colorOpen: null, // project whose color row is expanded in Settings
 };
 
 const PRIORITY_MARK = ['', '!', '!!', '!!!'];
@@ -58,6 +61,31 @@ function ring(pct, cls) {
   </svg>`;
 }
 
+export function starButton(t, iso) {
+  const on = isImportant(t, iso);
+  return `<button type="button" class="star-btn ${on ? 'on' : ''}" data-act="toggle-focus" data-id="${esc(t.id)}" data-date="${esc(iso)}" ${t.priority === 3 ? 'disabled title="優先度為高的任務每天都算最重要"' : ''} aria-pressed="${on}" aria-label="標為這天最重要">${on ? icon.starOn : icon.star}</button>`;
+}
+
+const PLAN_SCALES = [['day', '日'], ['week', '週'], ['month', '月'], ['cal', '月曆']];
+
+export function planSegHTML() {
+  return `<div class="seg plan-seg" role="group" aria-label="計畫檢視">${PLAN_SCALES.map(([k, label]) =>
+    `<button type="button" class="${prefs.plan === k ? 'on' : ''}" data-act="plan-set" data-v="${k}" aria-pressed="${prefs.plan === k}">${label}</button>`).join('')}</div>`;
+}
+
+// The whole day on one line, shared by the Today page and the day table.
+export function stripHTML(blocks, now, act) {
+  const segs = blocks.map((b) => {
+    const color = blockInfo(b).color || FREE_BLOCK_COLOR;
+    return `<i class="strip-seg ${b.done ? 'is-done' : ''}" style="left:${(b.start / DAY_MINUTES) * 100}%;width:${((b.end - b.start) / DAY_MINUTES) * 100}%;background:${esc(color)}"></i>`;
+  }).join('');
+  const ticks = [0, 6, 12, 18, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${h}</span>`).join('');
+  return `<button type="button" class="strip" data-act="${act}" aria-label="整天時間軸">
+    <span class="strip-track">${segs}${now >= 0 ? `<i class="strip-now" style="left:${(now / DAY_MINUTES) * 100}%"></i>` : ''}</span>
+    <span class="strip-ticks">${ticks}</span>
+  </button>`;
+}
+
 function subRow(t, s, today) {
   const st = subStatusOf(s, today);
   return `<div class="row sub ${s.done ? 'is-done' : ''}">
@@ -69,7 +97,7 @@ function subRow(t, s, today) {
   </div>`;
 }
 
-function taskRow(t, today, { subs = t.subtasks, expandable = true, showAdd = false } = {}) {
+function taskRow(t, today, { subs = t.subtasks, expandable = true, showAdd = false, star = null, meta = '' } = {}) {
   const st = statusOf(t, today);
   const pct = percent(t);
   const project = getProject(t.projectId);
@@ -86,8 +114,10 @@ function taskRow(t, today, { subs = t.subtasks, expandable = true, showAdd = fal
           <span class="${st === 'late' ? 'text-late' : ''}">${esc(fmtRange(t.start, t.end))}</span>
           ${count ? `<span>${t.subtasks.filter((s) => s.done).length}/${count} 子任務</span>` : ''}
           ${t.notes ? `<span class="meta-ic" aria-label="有備註">${icon.note}</span>` : ''}
+          ${meta}
         </span>
       </button>
+      ${star ? starButton(t, star) : ''}
       <span class="pill s-${STATUS[st].cls}">${esc(STATUS[st].label)}</span>
       <span class="ring-wrap" title="${pct}%">${ring(pct, STATUS[st].cls)}<span class="ring-num">${pct}</span></span>
       ${expandable ? `<button type="button" class="disclose ${expanded ? 'open' : ''}" data-act="toggle-expand" data-id="${esc(t.id)}" aria-expanded="${expanded}" aria-label="${expanded ? '收合子任務' : '展開子任務'}">${icon.chevR}</button>` : ''}
@@ -106,47 +136,176 @@ function group(title, body, extra = '') {
 
 /* ---------- Today ---------- */
 
-export function renderToday() {
-  const today = todayStr();
+const daysBetween = (from, to) => toDay(to) - toDay(from);
+
+function nowCard(today, blocks, minute) {
+  const current = blocks.find((b) => b.start <= minute && minute < b.end);
+  const next = blocks.find((b) => b.start > minute);
+  const tasksLeft = tasksForDay(state, today, today);
+  const unplaced = tasksLeft.filter((t) => !blocks.some((b) => b.taskId === t.id)).length;
+  const planned = plannedMinutes(blocks);
+
+  let headline;
+  if (current) {
+    const left = current.end - minute;
+    const pct = ((minute - current.start) / (current.end - current.start)) * 100;
+    headline = `<small class="now-label">現在</small>
+      <h2 class="now-title">${esc(blockInfo(current).title)}</h2>
+      <p class="now-meta">${fmtMinute(current.start)}–${fmtMinute(current.end)}｜還有 ${esc(fmtDuration(left))}</p>
+      <div class="now-bar"><i style="width:${pct}%"></i></div>`;
+  } else if (next) {
+    headline = `<small class="now-label">下一段</small>
+      <h2 class="now-title">${esc(blockInfo(next).title)}</h2>
+      <p class="now-meta">${fmtMinute(next.start)} 開始｜再過 ${esc(fmtDuration(next.start - minute))}</p>`;
+  } else if (blocks.length) {
+    headline = `<small class="now-label">今天的時間表</small>
+      <h2 class="now-title">排定的時段都過了</h2>
+      <p class="now-meta">可以寫點日記，收個尾。</p>`;
+  } else {
+    headline = `<small class="now-label">今天的時間表</small>
+      <h2 class="now-title">${tasksLeft.length ? `有 ${tasksLeft.length} 件事，還沒排時間` : '今天還沒有安排'}</h2>
+      <p class="now-meta">把任務拉進 10 分鐘時間表，不會改動週、月計畫。</p>`;
+  }
+  const after = current && next
+    ? `<p class="now-next">接著 ${fmtMinute(next.start)} ${esc(blockInfo(next).title)}</p>`
+    : '';
+  return `<section class="card now-card">
+    <div class="now-main">${headline}${after}</div>
+    ${stripHTML(blocks, minute, 'go-day')}
+    <div class="now-foot">
+      <span>已排 ${esc(fmtDuration(planned))}${unplaced ? `｜${unplaced} 件未排` : ''}</span>
+      <button type="button" class="btn small" data-act="go-day">排時間</button>
+    </div>
+  </section>`;
+}
+
+function weekCard(today) {
   const day = toDay(today);
-  const all = state.tasks;
-  const [, m, d] = today.split('-').map(Number);
-  const sub = `${m} 月 ${d} 日 星期${WEEKDAYS[weekdayIdx(day)]}｜第 ${weekNumber(day, state.settings)} 週`;
-  const counts = { todo: 0, doing: 0, done: 0, late: 0 };
-  for (const t of all) {
+  const monday = mondayOf(day);
+  const open = state.tasks.filter((t) => percent(t) < 100);
+  const loads = Array.from({ length: 7 }, (_, i) => {
+    const iso = fromDay(monday + i);
+    return { iso, i, active: open.filter((t) => isActiveOn(t, iso)).length, due: open.filter((t) => t.end === iso).length };
+  });
+  const peak = Math.max(1, ...loads.map((l) => l.active));
+  const bars = loads.map((l) => `<button type="button" class="load-day ${l.iso === today ? 'is-today' : ''} ${l.iso < today ? 'past' : ''}" data-act="go-day" data-date="${l.iso}" aria-label="${l.iso}，${l.active} 件進行，${l.due} 件到期">
+      <span class="load-num">${l.active || ''}</span>
+      <span class="load-track"><i style="height:${(l.active / peak) * 100}%"></i></span>
+      <small>${WEEKDAYS[l.i]}</small>
+      <span class="load-due">${l.due ? `${l.due} 到期` : ''}</span>
+    </button>`).join('');
+  const counts = { doing: 0, late: 0, todo: 0, done: 0 };
+  for (const t of state.tasks) {
     const st = statusOf(t, today);
     if (st in counts) counts[st]++;
   }
-  const tiles = ['doing', 'late', 'todo', 'done'].map((k) => `
-    <button type="button" class="tile s-${k}" data-act="drill-status" data-status="${k}">
-      <span class="tile-num">${counts[k]}</span><span class="tile-label"><i class="dot"></i>${STATUS[k].label}</span>
-    </button>`).join('');
+  const stats = ['doing', 'late', 'todo', 'done'].map((k) =>
+    `<button type="button" class="stat" data-act="drill-status" data-status="${k}"><b>${counts[k]}</b><span>${STATUS[k].label}</span></button>`).join('');
+  return `<section class="group"><h2 class="group-head">本週負荷<span class="group-count">第 ${weekNumber(day, state.settings)} 週</span></h2>
+    <div class="card week-card"><div class="load-grid">${bars}</div><div class="stats">${stats}</div></div>
+  </section>`;
+}
+
+function overdueCard(today) {
+  const late = state.tasks.filter((t) => statusOf(t, today) === 'late').sort((a, b) => a.end.localeCompare(b.end));
+  const nodate = state.tasks.filter((t) => ['nodate', 'bad'].includes(statusOf(t, today)));
+  if (!late.length && !nodate.length) return '';
+  const lateRows = late.map((t) => `<div class="row triage">
+      <button type="button" class="check" data-act="toggle-task" data-id="${esc(t.id)}" role="checkbox" aria-checked="false" aria-label="完成：${esc(t.title)}"></button>
+      <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}">
+        <span class="row-title">${esc(t.title) || '<em>未命名任務</em>'}</span>
+        <span class="row-meta"><span class="text-late">逾期 ${daysBetween(t.end, today)} 天</span></span>
+      </button>
+      <div class="triage-actions">
+        <button type="button" class="btn small" data-act="defer-task" data-id="${esc(t.id)}" data-to="today">改今天</button>
+        <button type="button" class="btn small" data-act="defer-task" data-id="${esc(t.id)}" data-to="tomorrow">改明天</button>
+      </div>
+    </div>`).join('');
+  const nodateRows = nodate.map((t) => `<div class="row triage">
+      <span class="triage-gap"></span>
+      <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}">
+        <span class="row-title">${esc(t.title) || '<em>未命名任務</em>'}</span>
+        <span class="row-meta"><span>${esc(STATUS[statusOf(t, today)].label)}</span></span>
+      </button>
+      <div class="triage-actions"><button type="button" class="btn small" data-act="defer-task" data-id="${esc(t.id)}" data-to="today">排今天</button></div>
+    </div>`).join('');
+  return group('<span class="text-late">需要處理</span>', lateRows + nodateRows, `<span class="group-count">${late.length + nodate.length}</span>`);
+}
+
+function soonCard(today) {
+  const limit = addDays(today, 7);
+  const soon = state.tasks
+    .filter((t) => percent(t) < 100 && t.end && t.end > today && t.end <= limit && t.start && t.start <= t.end)
+    .sort((a, b) => a.end.localeCompare(b.end));
+  if (!soon.length) return '';
+  const rows = soon.map((t) => {
+    const project = getProject(t.projectId);
+    return `<button type="button" class="row soon-row" data-act="open-task" data-id="${esc(t.id)}">
+      <span class="d-count">D-${daysBetween(today, t.end)}</span>
+      <span class="soon-title">${project ? `<i class="dot" style="background:${esc(project.color)}"></i>` : ''}${esc(t.title) || '<em>未命名任務</em>'}</span>
+      <span class="date-chip">${esc(fmtRange(t.end, t.end))}</span>
+    </button>`;
+  }).join('');
+  return group('即將到期', rows);
+}
+
+function diaryCard(today) {
+  const preview = plainPreview(diaryBody(today), 80);
+  return `<section class="group"><h2 class="group-head">日記</h2>
+    <div class="card">
+      <div class="quick-add flat"><span class="add-mark">${icon.book}</span>
+        <input type="text" class="bare" placeholder="記一筆，按 Enter 存進今天的日記" enterkeyhint="done" data-enter="quick-diary" data-keep="today-diary" aria-label="記一筆到今天的日記"></div>
+      <button type="button" class="row form-row link-row diary-open" data-act="go-diary"><span class="diary-preview">${preview ? esc(preview) : '打開今天的日記'}</span>${icon.chevR}</button>
+    </div>
+  </section>`;
+}
+
+export function renderToday() {
+  const today = todayStr();
+  const day = toDay(today);
+  const [, m, d] = today.split('-').map(Number);
+  const sub = `${m} 月 ${d} 日 星期${WEEKDAYS[weekdayIdx(day)]}｜第 ${weekNumber(day, state.settings)} 週`;
+  const clock = new Date();
+  const minute = clock.getHours() * 60 + clock.getMinutes();
+  const blocks = blocksOn(state, today);
 
   // Subtasks already due or under way are the actual to-dos, so they show without expanding.
   const activeSubs = (t) => t.subtasks.filter((s) => !s.done && (!s.start || s.start <= today));
-  const row = (t) => taskRow(t, today, { subs: activeSubs(t), expandable: false });
-  const sorted = [...all].sort((a, b) => (a.end || '9999').localeCompare(b.end || '9999') || a.order - b.order);
-  const late = sorted.filter((t) => statusOf(t, today) === 'late');
-  const doing = sorted.filter((t) => statusOf(t, today) === 'doing');
-  const soon = sorted
-    .filter((t) => statusOf(t, today) === 'todo' && t.start <= addDays(today, 7))
-    .sort((a, b) => a.start.localeCompare(b.start));
-  const nodate = sorted.filter((t) => ['nodate', 'bad'].includes(statusOf(t, today)));
+  const planned = (t) => {
+    const total = plannedMinutes(blocks.filter((b) => b.taskId === t.id));
+    return total ? `<span>已排 ${esc(fmtDuration(total))}</span>` : '';
+  };
+  const focusList = state.tasks
+    .filter((t) => percent(t) < 100 && isActiveOn(t, today))
+    .sort((a, b) => Number(isImportant(b, today)) - Number(isImportant(a, today)) || a.end.localeCompare(b.end) || a.order - b.order);
+  const dueLabel = (t) => (t.end === today ? '<span class="text-late">今天到期</span>' : '');
+  const rows = focusList.map((t) =>
+    taskRow(t, today, { subs: activeSubs(t), expandable: false, star: today, meta: `${dueLabel(t)}${planned(t)}` })).join('');
 
-  const quick = `<div class="quick-add card">
+  const quick = `<div class="quick-add flat">
     <span class="add-mark">${icon.plus}</span>
     <input type="text" class="bare" placeholder="新增今天的任務，按 Enter" enterkeyhint="done" data-enter="quick-today" data-keep="today-add" aria-label="新增今天的任務">
   </div>`;
+  const todayCard = `<section class="group"><h2 class="group-head">今天要做<span class="group-count">${focusList.length}</span></h2>
+    <div class="card">${rows}${quick}</div>
+    ${focusList.length ? '<p class="group-foot">點星號標出今天最重要的事，它會排到最上面，也會在月曆上突顯。</p>' : ''}
+  </section>`;
 
-  const nothing = !late.length && !doing.length && !soon.length && !nodate.length;
-  return `<div class="view-body" data-scroll="today">
+  return `<div class="view-body dash-body" data-scroll="today">
     ${headerHTML('今天', sub)}
-    ${all.length ? `<div class="tiles">${tiles}</div>${quick}` : emptyHTML()}
-    ${late.length ? group('<span class="text-late">已逾期</span>', late.map(row).join('')) : ''}
-    ${doing.length ? group('進行中', doing.map(row).join('')) : ''}
-    ${soon.length ? group('接下來 7 天', soon.map(row).join('')) : ''}
-    ${nodate.length ? group('需要補日期', nodate.map(row).join('')) : ''}
-    ${all.length && nothing ? '<p class="all-clear">目前沒有待辦，今天很輕鬆。</p>' : ''}
+    ${state.tasks.length ? '' : emptyHTML()}
+    <div class="dash">
+      <div class="dash-col">
+        ${nowCard(today, blocks, minute)}
+        ${overdueCard(today)}
+        ${todayCard}
+      </div>
+      <div class="dash-col">
+        ${weekCard(today)}
+        ${soonCard(today)}
+        ${diaryCard(today)}
+      </div>
+    </div>
   </div>`;
 }
 
@@ -211,10 +370,21 @@ export function renderSettings() {
     `<button type="button" class="${prefs.theme === k ? 'on' : ''}" data-act="set-theme" data-v="${k}" aria-pressed="${prefs.theme === k}">${label}</button>`).join('');
 
   const projects = state.projects.map((p) => `<div class="row form-row">
-      <button type="button" class="swatch" style="background:${esc(p.color)}" data-act="cycle-color" data-id="${esc(p.id)}" aria-label="更換 ${esc(p.name)} 的顏色"></button>
-      <input type="text" class="bare" value="${esc(p.name)}" data-in="project-name" data-id="${esc(p.id)}" aria-label="專案名稱" maxlength="60">
+      <button type="button" class="swatch" style="background:${esc(p.color)}" data-act="toggle-color" data-id="${esc(p.id)}" aria-expanded="${shell.colorOpen === p.id}" aria-label="更換 ${esc(p.name)} 的顏色"></button>
+      <input type="text" class="bare" value="${esc(p.name)}" data-in="project-name" data-id="${esc(p.id)}" data-keep="project-${esc(p.id)}" aria-label="專案名稱" maxlength="60">
       <button type="button" class="icon-btn danger" data-act="delete-project" data-id="${esc(p.id)}" aria-label="刪除專案 ${esc(p.name)}">${icon.trash}</button>
-    </div>`).join('');
+    </div>
+    ${shell.colorOpen === p.id ? `<div class="color-drawer">${colorRowHTML({ value: p.color, target: 'project', id: p.id })}</div>` : ''}`).join('');
+
+  const statusColors = ['todo', 'doing', 'done', 'late'].map((k) => {
+    const value = s.statusColors[k];
+    const open = shell.colorOpen === `status-${k}`;
+    return `<div class="row form-row">
+      <button type="button" class="swatch" style="background:${esc(value)}" data-act="toggle-color" data-id="status-${k}" aria-expanded="${open}" aria-label="更換${STATUS[k].label}的顏色"></button>
+      <span class="form-label">${STATUS[k].label}</span>
+    </div>
+    ${open ? `<div class="color-drawer">${colorRowHTML({ value, target: 'status', id: k })}</div>` : ''}`;
+  }).join('');
 
   const sync = connected
     ? `<div class="row form-row"><span class="form-label">狀態</span><span class="form-value ${syncStatus.state === 'error' ? 'text-late' : ''}" id="sync-line">${esc(syncLine())}</span></div>
@@ -227,6 +397,10 @@ export function renderSettings() {
     ${headerHTML('設定', '')}
 
     <section class="group"><h2 class="group-head">外觀</h2><div class="card pad"><div class="seg wide" role="group" aria-label="外觀">${theme}</div></div></section>
+
+    <section class="group"><h2 class="group-head">狀態顏色</h2><div class="card">${statusColors}
+      <button type="button" class="row form-row link-row" data-act="reset-status-colors">恢復預設馬卡龍色</button>
+    </div><p class="group-foot">甘特圖的色條預設依狀態上色，也可以在甘特圖的 ⋯ 選單改成依專案。</p></section>
 
     <section class="group"><h2 class="group-head">專案</h2><div class="card">${projects}
       <div class="row form-row"><span class="add-mark">${icon.plus}</span>
@@ -303,12 +477,46 @@ Object.assign(actions, {
     setPref({ theme: el.dataset.v });
     applyTheme();
   },
-  'cycle-color': (el) => {
-    const p = getProject(el.dataset.id);
-    commit(() => {
-      p.color = PALETTE[(PALETTE.indexOf(p.color) + 1) % PALETTE.length];
-      p.updatedAt = Date.now();
+  'toggle-color': (el) => {
+    shell.colorOpen = shell.colorOpen === el.dataset.id ? null : el.dataset.id;
+    rerender();
+  },
+  'pick-color': (el) => {
+    applyColor(el.dataset.target, el.dataset.id, el.dataset.v);
+    // Inside a sheet nothing re-renders the row, so mark the choice right here.
+    el.parentElement.querySelectorAll('.swatch').forEach((b) => b.classList.toggle('on', b === el));
+  },
+  'reset-status-colors': () => {
+    commit((s) => {
+      s.settings.statusColors = { ...DEFAULT_STATUS_COLORS };
+      s.settings.updatedAt = Date.now();
     });
+  },
+  'plan-set': (el) => setPref({ plan: el.dataset.v }),
+  'toggle-focus': (el) => {
+    const t = getTask(el.dataset.id);
+    if (!t) return;
+    commit(() => {
+      toggleFocusDay(t, el.dataset.date);
+      touch(t);
+    });
+  },
+  'defer-task': (el) => {
+    const t = getTask(el.dataset.id);
+    if (!t) return;
+    const to = el.dataset.to === 'tomorrow' ? addDays(todayStr(), 1) : todayStr();
+    commit(() => {
+      deferTask(t, to);
+      touch(t);
+    }, { undo: `已把「${t.title || '未命名任務'}」改到${el.dataset.to === 'tomorrow' ? '明天' : '今天'}` });
+  },
+  'go-day': (el) => {
+    focusDate.plan = el.dataset.date || todayStr();
+    setPref({ view: 'gantt', plan: 'day' });
+  },
+  'go-diary': () => {
+    focusDate.diary = todayStr();
+    setPref({ view: 'diary' });
   },
   'delete-project': (el) => {
     const id = el.dataset.id;
@@ -384,6 +592,47 @@ function pickFile(accept, handler) {
   input.click();
 }
 
+function applyColor(target, id, value) {
+  const now = Date.now();
+  commit((s) => {
+    if (target === 'project') {
+      const p = getProject(id);
+      if (p && value) {
+        p.color = value;
+        p.updatedAt = now;
+      }
+    } else if (target === 'status' && value) {
+      s.settings.statusColors = { ...s.settings.statusColors, [id]: value };
+      s.settings.updatedAt = now;
+    } else if (target === 'task') {
+      const t = getTask(id);
+      if (t) {
+        t.color = value;
+        touch(t);
+      }
+    } else if (target === 'block') {
+      const b = s.blocks.find((x) => x.id === id);
+      if (b) {
+        b.color = value;
+        b.updatedAt = now;
+      }
+    }
+  });
+}
+
+let appliedColors = '';
+export function applyStatusColors() {
+  const colors = state.settings.statusColors;
+  const key = JSON.stringify(colors);
+  if (key === appliedColors) return;
+  appliedColors = key;
+  const root = document.documentElement.style;
+  for (const [k, v] of Object.entries(colors)) {
+    root.setProperty(`--s-${k}`, v);
+    root.setProperty(`--ink-${k}`, inkOn(v));
+  }
+}
+
 export function applyTheme() {
   const root = document.documentElement;
   if (prefs.theme === 'system') delete root.dataset.theme;
@@ -402,6 +651,14 @@ Object.assign(enters, {
   'quick-today': (el) => quickAdd(el, (title) => {
     const today = todayStr();
     addTask({ title, start: today, end: today });
+  }),
+  'quick-diary': (el) => quickAdd(el, (text) => {
+    const date = todayStr();
+    const d = new Date();
+    const line = `- ${fmtMinute(d.getHours() * 60 + d.getMinutes())} ${text}`;
+    const body = diaryBody(date).trimEnd();
+    saveDiary(date, body ? `${body}${/^\s*- /.test(body.split('\n').pop()) ? '\n' : '\n\n'}${line}` : line);
+    toast('已記到今天的日記');
   }),
   'quick-sub': (el) => quickAdd(el, (title) => {
     const t = getTask(el.dataset.id);
@@ -430,6 +687,11 @@ Object.assign(inputs, {
 });
 
 Object.assign(changes, {
+  'pick-color-custom': (el) => {
+    applyColor(el.dataset.target, el.dataset.id, el.value);
+    el.parentElement.style.background = el.value;
+    el.closest('.color-row').querySelectorAll('.swatch').forEach((b) => b.classList.toggle('on', b === el.parentElement));
+  },
   'hide-done': (el) => setPref({ hideDone: el.checked }),
   'base-monday': (el) => {
     if (!el.value) return;

@@ -1,6 +1,6 @@
 // Optional multi-device sync through a secret GitHub Gist. A static site has no
 // server of its own, so the gist acts as the shared file between devices.
-import { merge, normalize } from './core.js';
+import { canonical, merge, normalize } from './core.js';
 import { onDataChange, replaceFromSync, state } from './store.js';
 
 const CFG_KEY = 'dg.sync.v1';
@@ -99,17 +99,6 @@ export async function syncNow() {
       syncNow();
     }
   }
-}
-
-// Field and item order must not count as a difference.
-function canonical(d) {
-  const byId = (a, b) => (a.id < b.id ? -1 : 1);
-  return {
-    projects: [...d.projects].sort(byId),
-    tasks: [...d.tasks].sort(byId),
-    settings: d.settings,
-    deleted: Object.fromEntries(Object.entries(d.deleted).sort(([a], [b]) => (a < b ? -1 : 1))),
-  };
 }
 
 export async function connect(token) {
