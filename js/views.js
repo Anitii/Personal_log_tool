@@ -1,12 +1,13 @@
 // Today, Tasks and Settings views, plus the row markup they share.
 import {
   DAY_MINUTES, DEFAULT_STATUS_COLORS, FREE_BLOCK_COLOR, PALETTE, STATUS, WEEKDAYS, addDays, blocksOn, deferTask, fitParentToSubs, fmtDuration,
-  fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isImportant, makeSub, mondayOf, newId, normalize, percent, plannedMinutes, setDone,
+  fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isImportant, makeSub, mondayOf, moveProject, newId, normalize, percent, plannedMinutes, setDone,
   statusOf, subStatusOf, tasksForDay, toCSV, toDay, todayStr, toggleFocusDay, weekNumber, weekdayIdx,
 } from './core.js';
 import { plainPreview } from './markdown.js';
 import {
-  addTask, blockInfo, commit, diaryBody, focusDate, getProject, getTask, loadSample, prefs, replaceAll, saveDiary, setPref, state, touch, visibleTasks,
+  addTask, blockInfo, commit, diaryBody, focusDate, getProject, getTask, liveTasks, loadSample, prefs, replaceAll, saveDiary, setPref, state, touch,
+  visibleTasks,
 } from './store.js';
 import { connect, disconnect, syncNow, syncStatus } from './sync.js';
 import { actions, changes, colorRowHTML, download, enters, esc, icon, inputs, toast } from './ui.js';
@@ -118,6 +119,7 @@ function taskRow(t, today, { subs = t.subtasks, expandable = true, showAdd = fal
         </span>
       </button>
       ${star ? starButton(t, star) : ''}
+      ${st === 'done' && !t.archivedAt ? `<button type="button" class="icon-btn archive-btn" data-act="archive-task" data-id="${esc(t.id)}" aria-label="封存「${esc(t.title)}」" title="封存">${icon.archive}</button>` : ''}
       <span class="pill s-${STATUS[st].cls}">${esc(STATUS[st].label)}</span>
       <span class="ring-wrap" title="${pct}%">${ring(pct, STATUS[st].cls)}<span class="ring-num">${pct}</span></span>
       ${expandable ? `<button type="button" class="disclose ${expanded ? 'open' : ''}" data-act="toggle-expand" data-id="${esc(t.id)}" aria-expanded="${expanded}" aria-label="${expanded ? '收合子任務' : '展開子任務'}">${icon.chevR}</button>` : ''}
@@ -182,7 +184,7 @@ function nowCard(today, blocks, minute) {
 function weekCard(today) {
   const day = toDay(today);
   const monday = mondayOf(day);
-  const open = state.tasks.filter((t) => percent(t) < 100);
+  const open = liveTasks().filter((t) => percent(t) < 100);
   const loads = Array.from({ length: 7 }, (_, i) => {
     const iso = fromDay(monday + i);
     return { iso, i, active: open.filter((t) => isActiveOn(t, iso)).length, due: open.filter((t) => t.end === iso).length };
@@ -195,7 +197,7 @@ function weekCard(today) {
       <span class="load-due">${l.due ? `${l.due} 到期` : ''}</span>
     </button>`).join('');
   const counts = { doing: 0, late: 0, todo: 0, done: 0 };
-  for (const t of state.tasks) {
+  for (const t of liveTasks()) {
     const st = statusOf(t, today);
     if (st in counts) counts[st]++;
   }
@@ -207,8 +209,8 @@ function weekCard(today) {
 }
 
 function overdueCard(today) {
-  const late = state.tasks.filter((t) => statusOf(t, today) === 'late').sort((a, b) => a.end.localeCompare(b.end));
-  const nodate = state.tasks.filter((t) => ['nodate', 'bad'].includes(statusOf(t, today)));
+  const late = liveTasks().filter((t) => statusOf(t, today) === 'late').sort((a, b) => a.end.localeCompare(b.end));
+  const nodate = liveTasks().filter((t) => ['nodate', 'bad'].includes(statusOf(t, today)));
   if (!late.length && !nodate.length) return '';
   const lateRows = late.map((t) => `<div class="row triage">
       <button type="button" class="check" data-act="toggle-task" data-id="${esc(t.id)}" role="checkbox" aria-checked="false" aria-label="完成：${esc(t.title)}"></button>
@@ -234,7 +236,7 @@ function overdueCard(today) {
 
 function soonCard(today) {
   const limit = addDays(today, 7);
-  const soon = state.tasks
+  const soon = liveTasks()
     .filter((t) => percent(t) < 100 && t.end && t.end > today && t.end <= limit && t.start && t.start <= t.end)
     .sort((a, b) => a.end.localeCompare(b.end));
   if (!soon.length) return '';
@@ -275,7 +277,7 @@ export function renderToday() {
     const total = plannedMinutes(blocks.filter((b) => b.taskId === t.id));
     return total ? `<span>已排 ${esc(fmtDuration(total))}</span>` : '';
   };
-  const focusList = state.tasks
+  const focusList = liveTasks()
     .filter((t) => percent(t) < 100 && isActiveOn(t, today))
     .sort((a, b) => Number(isImportant(b, today)) - Number(isImportant(a, today)) || a.end.localeCompare(b.end) || a.order - b.order);
   const dueLabel = (t) => (t.end === today ? '<span class="text-late">今天到期</span>' : '');
@@ -341,13 +343,36 @@ export function renderTasks() {
   const body = groups.filter((g) => g.items.length).map((g) =>
     group(g.title, g.items.map((t) => taskRow(t, today)).join(''), `<span class="group-count">${g.items.length}</span>`)).join('');
 
+  const doneCount = list.filter((t) => statusOf(t, today) === 'done').length;
+  const archived = visibleTasks(today, { archived: true }).filter((t) => t.archivedAt)
+    .sort((a, b) => b.archivedAt - a.archivedAt);
+  const archivedRows = archived.map((t) => {
+    const project = getProject(t.projectId);
+    return `<div class="row archived-row">
+      <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}">
+        <span class="row-title">${esc(t.title) || '<em>未命名任務</em>'}</span>
+        <span class="row-meta">${project ? `<span class="meta-project"><i class="dot" style="background:${esc(project.color)}"></i>${esc(project.name)}</span>` : ''}<span>${esc(fmtRange(t.start, t.end))}</span></span>
+      </button>
+      <button type="button" class="btn small" data-act="unarchive-task" data-id="${esc(t.id)}">拉回來</button>
+    </div>`;
+  }).join('');
+  const archive = archived.length ? `<section class="group">
+      <button type="button" class="group-head fold-head" data-act="toggle-archived" aria-expanded="${!!prefs.showArchived}">
+        ${icon.archive}已封存<span class="group-count">${archived.length}</span><span class="fold-chev ${prefs.showArchived ? 'open' : ''}">${icon.chevR}</span></button>
+      ${prefs.showArchived ? `<div class="card">${archivedRows}</div><p class="group-foot">封存的任務不會出現在今天、時間表和甘特圖；月曆上仍看得到當時的紀錄。拉回來就會回到清單。</p>` : ''}
+    </section>` : '';
+
   return `<div class="view-body" data-scroll="tasks">
-    ${headerHTML('任務', `共 ${list.length} 項`)}
+    ${headerHTML('任務', `進行中 ${list.length - doneCount} 項${doneCount ? `｜已完成 ${doneCount} 項` : ''}`)}
     ${chipsHTML()}
     <div class="seg-row"><div class="seg" role="group" aria-label="分組方式">${seg}</div>
-      <label class="inline-switch">隱藏已完成<input type="checkbox" class="switch" data-ch="hide-done" ${prefs.hideDone ? 'checked' : ''}></label>
+      <div class="seg-row-end">
+        ${doneCount ? `<button type="button" class="btn small" data-act="archive-done">${icon.archive}封存已完成</button>` : ''}
+        <label class="inline-switch">隱藏已完成<input type="checkbox" class="switch" data-ch="hide-done" ${prefs.hideDone ? 'checked' : ''}></label>
+      </div>
     </div>
     ${body || (state.tasks.length ? '<p class="all-clear">這個篩選條件下沒有任務。</p>' : emptyHTML())}
+    ${archive}
   </div>`;
 }
 
@@ -369,9 +394,11 @@ export function renderSettings() {
   const theme = [['system', '自動'], ['light', '淺色'], ['dark', '深色']].map(([k, label]) =>
     `<button type="button" class="${prefs.theme === k ? 'on' : ''}" data-act="set-theme" data-v="${k}" aria-pressed="${prefs.theme === k}">${label}</button>`).join('');
 
-  const projects = state.projects.map((p) => `<div class="row form-row">
+  const projects = state.projects.map((p, i) => `<div class="row form-row">
       <button type="button" class="swatch" style="background:${esc(p.color)}" data-act="toggle-color" data-id="${esc(p.id)}" aria-expanded="${shell.colorOpen === p.id}" aria-label="更換 ${esc(p.name)} 的顏色"></button>
       <input type="text" class="bare" value="${esc(p.name)}" data-in="project-name" data-id="${esc(p.id)}" data-keep="project-${esc(p.id)}" aria-label="專案名稱" maxlength="60">
+      <button type="button" class="icon-btn" data-act="move-project" data-id="${esc(p.id)}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="把 ${esc(p.name)} 上移">${icon.up}</button>
+      <button type="button" class="icon-btn" data-act="move-project" data-id="${esc(p.id)}" data-dir="1" ${i === state.projects.length - 1 ? 'disabled' : ''} aria-label="把 ${esc(p.name)} 下移">${icon.down}</button>
       <button type="button" class="icon-btn danger" data-act="delete-project" data-id="${esc(p.id)}" aria-label="刪除專案 ${esc(p.name)}">${icon.trash}</button>
     </div>
     ${shell.colorOpen === p.id ? `<div class="color-drawer">${colorRowHTML({ value: p.color, target: 'project', id: p.id })}</div>` : ''}`).join('');
@@ -405,7 +432,7 @@ export function renderSettings() {
     <section class="group"><h2 class="group-head">專案</h2><div class="card">${projects}
       <div class="row form-row"><span class="add-mark">${icon.plus}</span>
         <input type="text" class="bare" placeholder="新增專案" enterkeyhint="done" data-enter="add-project" data-keep="add-project" aria-label="新增專案" maxlength="60"></div>
-    </div></section>
+    </div><p class="group-foot">這裡的順序就是側邊欄、篩選和任務分組的順序。</p></section>
 
     <section class="group"><h2 class="group-head">週次基準</h2><div class="card">
       <label class="row form-row"><span class="form-label">基準週的週一</span><input type="date" class="field-date" value="${esc(s.baseMonday)}" data-ch="base-monday"></label>
@@ -452,7 +479,34 @@ Object.assign(actions, {
     commit(() => {
       setDone(t, done);
       touch(t);
-    }, done ? { undo: `已完成「${t.title || '未命名任務'}」` } : {});
+    }, done ? { undo: `已完成「${t.title || '未命名任務'}」`, also: { label: '封存', fn: () => archiveTask(t.id) } } : {});
+  },
+  'archive-task': (el) => archiveTask(el.dataset.id),
+  'unarchive-task': (el) => {
+    const t = getTask(el.dataset.id);
+    if (!t) return;
+    commit(() => {
+      t.archivedAt = 0;
+      touch(t);
+    }, { undo: `已把「${t.title || '未命名任務'}」拉回清單` });
+  },
+  'archive-done': () => {
+    const today = todayStr();
+    const ids = visibleTasks(today).filter((t) => statusOf(t, today) === 'done').map((t) => t.id);
+    if (!ids.length) return;
+    commit((s) => {
+      const now = Date.now();
+      for (const t of s.tasks) {
+        if (ids.includes(t.id)) {
+          t.archivedAt = now;
+          t.updatedAt = now;
+        }
+      }
+    }, { undo: `已封存 ${ids.length} 項已完成的任務` });
+  },
+  'toggle-archived': () => setPref({ showArchived: !prefs.showArchived }),
+  'move-project': (el) => {
+    commit((s) => moveProject(s.projects, el.dataset.id, Number(el.dataset.dir)));
   },
   'toggle-sub': (el) => {
     const t = getTask(el.dataset.id);
@@ -592,6 +646,15 @@ function pickFile(accept, handler) {
   input.click();
 }
 
+export function archiveTask(id) {
+  const t = getTask(id);
+  if (!t) return;
+  commit(() => {
+    t.archivedAt = Date.now();
+    touch(t);
+  }, { undo: `已封存「${t.title || '未命名任務'}」` });
+}
+
 function applyColor(target, id, value) {
   const now = Date.now();
   commit((s) => {
@@ -670,7 +733,8 @@ Object.assign(enters, {
   }),
   'add-project': (el) => quickAdd(el, (name) => {
     commit((s) => {
-      s.projects.push({ id: newId(), name, color: PALETTE[s.projects.length % PALETTE.length], updatedAt: Date.now() });
+      const order = Math.max(-1, ...s.projects.map((p) => p.order)) + 1;
+      s.projects.push({ id: newId(), name, color: PALETTE[s.projects.length % PALETTE.length], order, updatedAt: Date.now() });
     });
   }),
   'sync-on': () => actions['sync-on'](),

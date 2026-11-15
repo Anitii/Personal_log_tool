@@ -4,7 +4,7 @@ import {
   toDay, todayStr, toggleFocusDay, weekNumber, weekdayIdx,
 } from './core.js';
 import { addTask, commit, focusDate, getTask, prefs, setPref, state, taskColor, touch, visibleTasks } from './store.js';
-import { actions, changes, esc, icon } from './ui.js';
+import { actions, esc, icon } from './ui.js';
 import { closeSheet, openPanel, openTask } from './sheet.js';
 import { chipsHTML, headerHTML, planSegHTML } from './views.js';
 
@@ -39,7 +39,7 @@ function barHTML(bar, monday) {
   const realEnd = toDay(t.end) === monday + bar.to;
   const runs = barRuns(bar, monday);
   return runs.map((run, i) => {
-    const dim = (prefs.calDim && !run.important) || done;
+    const dim = (prefs.calDim && !run.important) || done || !!t.archivedAt;
     const cls = [
       'cal-bar',
       dim ? 'dim' : 'strong',
@@ -60,9 +60,9 @@ export function renderCalendar(main) {
   const ym = currentMonth();
   const [y, m] = ym.split('-').map(Number);
   const weeks = monthWeeks(ym);
-  const tasks = visibleTasks(today);
+  const tasks = visibleTasks(today, { archived: true }); // the calendar is also the record of what happened
 
-  const avail = (main.clientHeight || innerHeight) - (innerWidth < 768 ? 176 : 196);
+  const avail = (main.clientHeight || innerHeight) - (innerWidth < 768 ? 200 : 150);
   const rowH = Math.max(MIN_ROW_H, avail / weeks.length);
   const lanes = Math.max(2, Math.floor((rowH - DAY_HEAD_H - MORE_H) / LANE_H));
 
@@ -90,21 +90,21 @@ export function renderCalendar(main) {
     </div>`;
   }).join('');
 
-  const hint = !markedThisMonth && prefs.calDim && state.tasks.length
-    ? '<p class="cal-hint">點某一天，把任務加上星號標成最重要。其他任務會自動變淡。</p>'
-    : '';
+  const hint = !markedThisMonth && prefs.calDim && state.tasks.length ? '｜點日期把任務加星號' : '';
 
   main.innerHTML = `<div class="cal-view">
     <div class="g-head-wrap">
-      ${headerHTML('計畫', `${y} 年 ${m} 月`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
-      <div class="g-controls">${planSegHTML()}${chipsHTML()}</div>
-      <div class="cal-nav">
-        <button type="button" class="btn-circle" data-act="cal-shift" data-n="-1" aria-label="上個月">${icon.back}</button>
-        <b>${y} 年 ${m} 月</b>
-        <button type="button" class="btn-circle" data-act="cal-shift" data-n="1" aria-label="下個月">${icon.chevR}</button>
-        <label class="inline-switch cal-dim">淡化不重要<input type="checkbox" class="switch" data-ch="cal-dim" ${prefs.calDim ? 'checked' : ''}></label>
+      ${headerHTML('計畫', `月曆${hint}`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
+      <div class="g-controls">
+        ${planSegHTML()}
+        <div class="tb-nav">
+          <button type="button" class="btn-circle" data-act="cal-shift" data-n="-1" aria-label="上個月">${icon.back}</button>
+          <b>${y} 年 ${m} 月</b>
+          <button type="button" class="btn-circle" data-act="cal-shift" data-n="1" aria-label="下個月">${icon.chevR}</button>
+        </div>
+        ${chipsHTML()}
+        <button type="button" class="chip tb-toggle ${prefs.calDim ? 'on' : ''}" data-act="cal-dim" aria-pressed="${prefs.calDim}">淡化不重要</button>
       </div>
-      ${hint}
     </div>
     <div class="cal-scroll">
       <div class="cal-head"><span class="cal-weeknum">週</span><div class="cal-head-days">${WEEKDAYS.map((d) => `<span>${d}</span>`).join('')}</div></div>
@@ -143,6 +143,7 @@ function dayPanel(iso) {
 }
 
 Object.assign(actions, {
+  'cal-dim': () => setPref({ calDim: !prefs.calDim }),
   'cal-shift': (el) => {
     calendar.month = addMonths(currentMonth(), Number(el.dataset.n));
     requestRender();
@@ -173,9 +174,6 @@ Object.assign(actions, {
   },
 });
 
-Object.assign(changes, {
-  'cal-dim': (el) => setPref({ calDim: el.checked }),
-});
 
 export function calendarToday() {
   calendar.month = todayStr().slice(0, 7);

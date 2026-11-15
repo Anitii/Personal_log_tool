@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   PALETTE, addMonths, assignLanes, blockSegments, blocksOn, deferTask, defaultState, fromDay, inkOn, isImportant, layoutWeek, makeBlock,
-  makeSub, makeTask, merge, monthWeeks, normalize, plannedMinutes, sameDocument, statusOf, tasksForDay, toDay, toggleFocusDay,
+  makeSub, makeTask, merge, monthWeeks, moveProject, normalize, plannedMinutes, sameDocument, statusOf, tasksForDay, toDay, toggleFocusDay,
 } from '../js/core.js';
 import {
   detectShortcut, diaryToMarkdown, inlineSegments, olNumbers, parseMarkdown, plainPreview, serializeMarkdown,
@@ -23,10 +23,11 @@ test('upgrading version 1 data keeps every task and only softens the old colors'
     deleted: { gone: 11 },
   };
   const s = normalize(JSON.parse(JSON.stringify(v1)));
-  const { color, focusDays, ...task } = s.tasks[0];
+  const { color, focusDays, archivedAt, ...task } = s.tasks[0];
   assert.deepEqual(task, v1.tasks[0], 'every saved task field survives');
   assert.equal(color, '');
   assert.deepEqual(focusDays, []);
+  assert.equal(archivedAt, 0);
   assert.deepEqual(s.deleted, v1.deleted);
   assert.equal(s.settings.baseWeek, 7);
   assert.equal(s.projects[0].updatedAt, 5, 'recoloring is not an edit, so it cannot win a sync');
@@ -266,4 +267,28 @@ test('code blocks keep their headings when exporting', () => {
 test('plain preview skips markup and empty lines', () => {
   assert.equal(plainPreview('\n\n---\n\n# **重點** 今天'), '重點 今天');
   assert.equal(plainPreview(''), '');
+});
+
+test('archived tasks leave the day tray and keep their data', () => {
+  const s = defaultState();
+  const t = makeTask({ title: 'x', start: TODAY, end: TODAY });
+  s.tasks = [t];
+  assert.equal(tasksForDay(s, TODAY, TODAY).length, 1);
+  t.archivedAt = 5;
+  assert.equal(tasksForDay(s, TODAY, TODAY).length, 0);
+  assert.equal(normalize(JSON.parse(JSON.stringify(s))).tasks[0].archivedAt, 5);
+  assert.equal(normalize({ tasks: [{ id: 'a' }] }).tasks[0].archivedAt, 0, 'older data is not archived');
+});
+
+test('projects keep a synced order', () => {
+  const s = normalize({ version: 2, projects: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }] });
+  assert.deepEqual(s.projects.map((p) => p.order), [0, 1, 2], 'position becomes order for older data');
+  assert.equal(moveProject(s.projects, 'c', -1), true);
+  assert.deepEqual(s.projects.map((p) => p.id), ['a', 'c', 'b']);
+  assert.equal(moveProject(s.projects, 'a', -1), false, 'the first one cannot move up');
+  const other = normalize(JSON.parse(JSON.stringify(defaultState())));
+  other.projects = normalize({ version: 2, projects: [{ id: 'a', name: 'A', order: 0, updatedAt: 1 }, { id: 'b', name: 'B', order: 1, updatedAt: 1 }, { id: 'c', name: 'C', order: 2, updatedAt: 1 }] }).projects;
+  const merged = merge(other, s);
+  assert.deepEqual(merged.projects.map((p) => p.id), ['a', 'c', 'b'], 'the move reaches the other device');
+  assert.deepEqual(normalize(JSON.parse(JSON.stringify(merged))).projects.map((p) => p.id), ['a', 'c', 'b']);
 });

@@ -94,14 +94,14 @@ export function setPref(patch) {
 }
 
 // Writing to disk is deferred so a tap never waits on serialization.
-export function commit(fn, { undo } = {}) {
+export function commit(fn, { undo, also } = {}) {
   const before = undo ? JSON.stringify(state) : null;
   const result = fn(state);
   clearTimeout(persistTimer);
   persistTimer = setTimeout(persistNow, 200);
   dataListeners.forEach((l) => l());
   notify();
-  if (undo) toast(undo, () => restore(before));
+  if (undo) toast(undo, () => restore(before), '復原', also);
   return result;
 }
 
@@ -149,8 +149,12 @@ export function requestPersistentStorage() {
 export const getTask = (id) => state.tasks.find((t) => t.id === id);
 export const getProject = (id) => state.projects.find((p) => p.id === id);
 
-export function visibleTasks(today = todayStr()) {
+// Archived tasks are done with: they leave every list of things to do, but stay findable.
+export const liveTasks = () => state.tasks.filter((t) => !t.archivedAt);
+
+export function visibleTasks(today = todayStr(), { archived = false } = {}) {
   let list = state.tasks.filter((t) => {
+    if (t.archivedAt && !archived) return false;
     if (prefs.project === '__none') {
       if (t.projectId && getProject(t.projectId)) return false;
     } else if (prefs.project && t.projectId !== prefs.project) return false;
@@ -163,7 +167,9 @@ export function visibleTasks(today = todayStr()) {
   if (prefs.sort === 'start') {
     list.sort((a, b) => (a.start || '9999').localeCompare(b.start || '9999') || a.order - b.order);
   }
-  return list;
+  // Finished work sinks below what is still open; archived sinks below that.
+  const rank = (t) => (t.archivedAt ? 2 : statusOf(t, today) === 'done' ? 1 : 0);
+  return list.map((t, i) => [t, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([t]) => t);
 }
 
 /* ---------- Mutations used from several views ---------- */

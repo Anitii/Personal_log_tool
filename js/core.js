@@ -234,9 +234,27 @@ export function blockSegments(start, end) {
 // What the day's tray offers: open tasks planned for that day, plus today's overdue ones.
 export function tasksForDay(state, iso, today) {
   return state.tasks
-    .filter((t) => percent(t) < 100 && t.start && t.end && t.end >= t.start
+    .filter((t) => !t.archivedAt && percent(t) < 100 && t.start && t.end && t.end >= t.start
       && (isActiveOn(t, iso) || (iso === today && t.end < today)))
     .sort((a, b) => Number(isImportant(b, iso)) - Number(isImportant(a, iso)) || a.end.localeCompare(b.end) || a.order - b.order);
+}
+
+// Moves a project one place up or down. Order is a field rather than array position, so a
+// reordering on one device carries over through sync.
+export function moveProject(projects, id, dir) {
+  const i = projects.findIndex((p) => p.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= projects.length) return false;
+  const now = Date.now();
+  projects.forEach((p, n) => {
+    p.order = n;
+  });
+  projects[i].order = j;
+  projects[j].order = i;
+  projects[i].updatedAt = now;
+  projects[j].updatedAt = now;
+  projects.sort(byOrder);
+  return true;
 }
 
 /* Month calendar */
@@ -281,7 +299,7 @@ export function makeTask(fields = {}) {
   const now = Date.now();
   return {
     id: newId(), title: '', projectId: '', start: null, end: null, progress: 0, priority: 0,
-    notes: '', link: '', color: '', focusDays: [], subtasks: [], order: now, createdAt: now, updatedAt: now, ...fields,
+    notes: '', link: '', color: '', focusDays: [], archivedAt: 0, subtasks: [], order: now, createdAt: now, updatedAt: now, ...fields,
   };
 }
 
@@ -292,7 +310,7 @@ export function defaultState() {
   return {
     version: DATA_VERSION,
     projects: ['實習', '學校', '活動', '個人事項', '其他'].map((name, i) => ({
-      id: `p${i + 1}`, name, color: PALETTE[i], updatedAt: 0,
+      id: `p${i + 1}`, name, color: PALETTE[i], order: i, updatedAt: 0,
     })),
     tasks: [],
     blocks: [],
@@ -308,6 +326,7 @@ const num = (v, fallback) => (Number.isFinite(v) ? v : fallback);
 const validId = (v) => typeof v === 'string' && v.length > 0 && v.length < 64;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const hex = (v) => (isHex(v) ? v : '');
+const byOrder = (a, b) => a.order - b.order;
 const DIARY_MAX = 500000;
 
 // Everything arriving from a file or from sync passes through here.
@@ -324,8 +343,9 @@ export function normalize(raw) {
         id: p.id,
         name: str(p.name, 60) || '未命名',
         color: isHex(p.color) ? upgradeColor(p.color) : PALETTE[i % PALETTE.length],
+        order: num(p.order, i), // before projects had an order, their position was it
         updatedAt: num(p.updatedAt, now),
-      }))
+      })).sort(byOrder)
     : base.projects;
 
   const tasks = Array.isArray(raw.tasks)
@@ -341,6 +361,7 @@ export function normalize(raw) {
         link: /^https?:\/\//i.test(t.link) ? str(t.link, 2000) : '',
         color: hex(t.color),
         focusDays: Array.isArray(t.focusDays) ? [...new Set(t.focusDays.filter(isDate))] : [],
+        archivedAt: num(t.archivedAt, 0),
         subtasks: Array.isArray(t.subtasks)
           ? t.subtasks.filter((s) => s && validId(s.id)).map((s) => ({
               id: s.id, title: str(s.title, 300), start: date(s.start), end: date(s.end), done: s.done === true, notes: str(s.notes),
@@ -424,7 +445,7 @@ export function merge(a, b) {
 
   return {
     version: DATA_VERSION,
-    projects: mergeList(a.projects, b.projects),
+    projects: mergeList(a.projects, b.projects).sort(byOrder),
     tasks: mergeList(a.tasks, b.tasks),
     blocks: mergeList(a.blocks, b.blocks),
     diary: mergeList(a.diary, b.diary),

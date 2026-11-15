@@ -28,12 +28,12 @@ function navButtons(cls) {
 
 function renderChrome() {
   const projects = state.projects.map((p) => {
-    const count = state.tasks.filter((t) => t.projectId === p.id).length;
+    const count = state.tasks.filter((t) => !t.archivedAt && t.projectId === p.id).length;
     const on = prefs.project === p.id;
     return `<button type="button" class="side-project ${on ? 'on' : ''}" data-act="side-project" data-id="${esc(p.id)}" aria-pressed="${on}">
       <i class="dot" style="background:${esc(p.color)}"></i><span>${esc(p.name)}</span><small>${count}</small></button>`;
   }).join('');
-  const orphan = state.tasks.filter((t) => !t.projectId || !getProject(t.projectId)).length;
+  const orphan = state.tasks.filter((t) => !t.archivedAt && (!t.projectId || !getProject(t.projectId))).length;
   sidebar.innerHTML = `<div class="brand"><span class="brand-mark">${icon.gantt}</span><b>日常甘特</b></div>
     <nav class="side-nav" aria-label="主選單">${navButtons('side-item')}</nav>
     <div class="side-section"><h2>專案</h2>${projects}

@@ -167,7 +167,7 @@ function weekendStripes(l) {
 export function renderGantt(main) {
   const todayIso = todayStr();
   const today = toDay(todayIso);
-  const items = visibleTasks(todayIso);
+  const items = visibleTasks(todayIso, { archived: prefs.ganttArchived });
   const l = layout();
   const r = range(state.tasks, today);
   view = { ...r, dayW: l.dayW, labelW: l.labelW };
@@ -176,6 +176,7 @@ export function renderGantt(main) {
       ${l.canDetail ? `<label class="menu-item">精簡模式：只看行動事項<input type="checkbox" class="switch" data-ch="gantt-compact" ${prefs.compact ? 'checked' : ''}></label>` : ''}
       <label class="menu-item">隱藏已完成<input type="checkbox" class="switch" data-ch="hide-done" ${prefs.hideDone ? 'checked' : ''}></label>
       <label class="menu-item">依開始日期排序<input type="checkbox" class="switch" data-ch="gantt-sort" ${prefs.sort === 'start' ? 'checked' : ''}></label>
+      <label class="menu-item">顯示已封存<input type="checkbox" class="switch" data-ch="gantt-archived" ${prefs.ganttArchived ? 'checked' : ''}></label>
       <label class="menu-item">色條依專案上色<input type="checkbox" class="switch" data-ch="gantt-bar-color" ${prefs.barColor === 'project' ? 'checked' : ''}></label>
     </div>` : '';
 
@@ -210,7 +211,7 @@ export function renderGantt(main) {
     const st = statusOf(t, todayIso);
     const pct = percent(t);
     const dated = t.start && t.end && t.end >= t.start;
-    rows.push(`<div class="g-row is-task" style="height:${ROW_H}px" data-task="${esc(t.id)}">
+    rows.push(`<div class="g-row is-task ${t.archivedAt ? 'is-archived' : ''}" style="height:${ROW_H}px" data-task="${esc(t.id)}">
       ${labelHTML(t, st, pct, l)}
       <div class="g-track" style="width:${tw}px" ${dated ? '' : `data-act="gantt-set-date" data-id="${esc(t.id)}"`}>
         ${dated ? barHTML({ taskId: t.id, title: t.title, start: t.start, end: t.end, st, pct, range: fmtRange(t.start, t.end), colorStyle: barColorStyle(t) }) : `<span class="g-hint" style="left:${(today - r.start) * l.dayW + 6}px">${t.start || t.end ? '日期有誤，點此重設' : '點時間軸設定日期'}</span>`}
@@ -318,6 +319,7 @@ Object.assign(actions, {
 Object.assign(changes, {
   'gantt-compact': (el) => setPref({ compact: el.checked }),
   'gantt-sort': (el) => setPref({ sort: el.checked ? 'start' : 'manual' }),
+  'gantt-archived': (el) => setPref({ ganttArchived: el.checked }),
   'gantt-bar-color': (el) => setPref({ barColor: el.checked ? 'project' : 'status' }),
 });
 

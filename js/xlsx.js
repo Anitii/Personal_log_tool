@@ -154,7 +154,7 @@ export function applyWorkbook(parsed) {
         if (!name) return '';
         let p = s.projects.find((x) => x.name === name);
         if (!p) {
-          p = { id: newId(), name, color: PALETTE[s.projects.length % PALETTE.length], updatedAt: now };
+          p = { id: newId(), name, color: PALETTE[s.projects.length % PALETTE.length], order: Math.max(-1, ...s.projects.map((x) => x.order)) + 1, updatedAt: now };
           s.projects.push(p);
         }
         return p.id;

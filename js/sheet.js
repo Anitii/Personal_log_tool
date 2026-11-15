@@ -61,7 +61,7 @@ function refreshMeta() {
   const root = sheet();
   const pill = root.querySelector('#sheet-status');
   pill.className = `pill s-${STATUS[st].cls}`;
-  pill.textContent = STATUS[st].label;
+  pill.textContent = t.archivedAt ? `${STATUS[st].label}・已封存` : STATUS[st].label;
   const slider = root.querySelector('#sheet-progress');
   slider.value = pct;
   slider.disabled = t.subtasks.length > 0;
@@ -140,6 +140,7 @@ export function openTask(id, { isNew = false, focusSub } = {}) {
       </div>
 
       <div class="card">
+        <button type="button" class="row form-row link-row" data-act="sheet-archive">${t.archivedAt ? '拉回清單' : '封存任務'}</button>
         <button type="button" class="row form-row link-row" data-act="sheet-duplicate">複製任務</button>
         <button type="button" class="row form-row link-row destructive" data-act="sheet-delete">刪除任務</button>
       </div>
@@ -226,6 +227,16 @@ Object.assign(actions, {
     copy.subtasks.forEach((s) => (s.id = newId()));
     commit((st) => st.tasks.push(copy), { undo: '已複製任務' });
     openTask(copy.id);
+  },
+  'sheet-archive': () => {
+    const t = task();
+    if (!t) return;
+    const archiving = !t.archivedAt;
+    closeSheet();
+    commit(() => {
+      t.archivedAt = archiving ? Date.now() : 0;
+      touch(t);
+    }, { undo: archiving ? `已封存「${t.title || '未命名任務'}」` : `已把「${t.title || '未命名任務'}」拉回清單` });
   },
   'sheet-delete': () => {
     const id = current.id;

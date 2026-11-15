@@ -33,6 +33,7 @@ export const icon = {
   back: stroke('<path d="M15 5.5L8.5 12l6.5 6.5"/>', 'stroke-width="2.4"'),
   book: stroke('<path d="M6 3.5h13.5V20H6.5A2.5 2.5 0 0 1 4 17.5V5.5a2 2 0 0 1 2-2z"/><path d="M4 17.5A2.5 2.5 0 0 1 6.5 15h13M9 8h6"/>'),
   share: stroke('<path d="M12 15V4M8 7.5l4-4 4 4"/><path d="M7 11H5.5A1.5 1.5 0 0 0 4 12.5v6A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-6a1.5 1.5 0 0 0-1.5-1.5H17"/>'),
+  archive: stroke('<rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>'),
   star: stroke('<path d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>'),
   starOn: stroke('<path fill="currentColor" d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>'),
 };
@@ -83,18 +84,22 @@ export function initDelegation({ beforeClick } = {}) {
 }
 
 let toastTimer = 0;
-export function toast(message, undo, label = '復原') {
+// `also` is an optional second button, e.g. archiving what was just completed.
+export function toast(message, undo, label = '復原', also = null) {
   const el = document.getElementById('toast');
   clearTimeout(toastTimer);
-  el.innerHTML = `<span>${esc(message)}</span>${undo ? `<button type="button" class="toast-undo">${esc(label)}</button>` : ''}`;
+  el.innerHTML = `<span>${esc(message)}</span>${also ? `<button type="button" class="toast-undo" data-t="also">${esc(also.label)}</button>` : ''}${undo ? `<button type="button" class="toast-undo" data-t="undo">${esc(label)}</button>` : ''}`;
   el.classList.add('show');
-  if (undo) {
-    el.querySelector('button').onclick = () => {
+  const bind = (key, fn) => {
+    const btn = el.querySelector(`[data-t="${key}"]`);
+    if (btn) btn.onclick = () => {
       el.classList.remove('show');
-      undo();
+      fn();
     };
-  }
-  toastTimer = setTimeout(() => el.classList.remove('show'), undo ? 5000 : 2600);
+  };
+  if (undo) bind('undo', undo);
+  if (also) bind('also', also.fn);
+  toastTimer = setTimeout(() => el.classList.remove('show'), undo || also ? 5000 : 2600);
 }
 
 export function download(filename, text, type) {

@@ -95,7 +95,7 @@ export function renderPlanner(main) {
 
   const dayTasks = tasksForDay(state, iso, today);
   const dayIds = new Set(dayTasks.map((t) => t.id));
-  const others = state.tasks.filter((t) => !dayIds.has(t.id) && percent(t) < 100);
+  const others = state.tasks.filter((t) => !t.archivedAt && !dayIds.has(t.id) && percent(t) < 100);
   const unplaced = dayTasks.filter((t) => !minutes(t.id, '') && !t.subtasks.some((s) => minutes(t.id, s.id))).length;
   const planned = plannedMinutes(blocks);
 
@@ -132,18 +132,20 @@ export function renderPlanner(main) {
     : '';
 
   const head = `<div class="g-head-wrap">
-      ${headerHTML('計畫', isToday ? `今天的時間表｜第 ${weekNumber(day, state.settings)} 週` : `第 ${weekNumber(day, state.settings)} 週`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
-      <div class="g-controls">${planSegHTML()}</div>
+      ${headerHTML('計畫', `${isToday ? '今天的時間表' : '時間表'}｜第 ${weekNumber(day, state.settings)} 週`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
+      <div class="g-controls">
+        ${planSegHTML()}
+        <div class="tb-nav">
+          <button type="button" class="btn-circle" data-act="dp-shift" data-n="-1" aria-label="前一天">${icon.back}</button>
+          <label class="dp-date"><b>${m}/${d} 星期${WEEKDAYS[weekdayIdx(day)]}</b><input type="date" value="${esc(iso)}" data-ch="dp-date" aria-label="選擇日期"></label>
+          <button type="button" class="btn-circle" data-act="dp-shift" data-n="1" aria-label="後一天">${icon.chevR}</button>
+        </div>
+        <span class="dp-stats">已排 ${esc(fmtDuration(planned))}${unplaced ? `｜${unplaced} 件未排` : ''}</span>
+      </div>
     </div>`;
 
   main.innerHTML = `<div class="day-view">
     ${head}
-    <div class="dp-nav">
-      <button type="button" class="btn-circle" data-act="dp-shift" data-n="-1" aria-label="前一天">${icon.back}</button>
-      <label class="dp-date"><b>${m} 月 ${d} 日 星期${WEEKDAYS[weekdayIdx(day)]}</b><input type="date" value="${esc(iso)}" data-ch="dp-date" aria-label="選擇日期"></label>
-      <button type="button" class="btn-circle" data-act="dp-shift" data-n="1" aria-label="後一天">${icon.chevR}</button>
-      <span class="dp-stats">已排 ${esc(fmtDuration(planned))}${unplaced ? `｜還有 ${unplaced} 件未排` : ''}</span>
-    </div>
     <div class="day-layout">
       <aside class="day-tray card" aria-label="這天的任務">
         <h2 class="tray-head">這天的任務</h2>

@@ -1,6 +1,6 @@
 // Offline shell: every file is precached together, so a page never mixes two releases.
 // Change VERSION whenever any file below changes; that is what triggers the update.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `daily-gantt-${VERSION}`;
 const FILES = [
   './',
