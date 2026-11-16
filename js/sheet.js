@@ -1,6 +1,7 @@
 // Task detail sheet: bottom sheet on phones, centered on tablets, inspector on desktop.
 import {
-  STATUS, clampSubsToParent, fitParentToSubs, fmtRange, makeSub, makeTask, newId, percent, statusOf, subStatusOf, todayStr,
+  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtRange, makeSub, makeTask, newId, occursOn, percent, repeatLabel, statusOf,
+  subDoneOn, subStatusOf, todayStr, toggleSubOn,
 } from './core.js';
 import { commit, deleteTask, getTask, state, touch } from './store.js';
 import { actions, changes, colorRowHTML, enters, esc, icon, inputs } from './ui.js';
@@ -26,16 +27,32 @@ function subsHTML(t) {
   const today = todayStr();
   return t.subtasks.map((s, i) => {
     const open = openSubs.has(s.id);
-    const st = subStatusOf(s, today);
-    return `<div class="sub-edit ${s.done ? 'is-done' : ''}" data-sid="${esc(s.id)}">
+    const st = subStatusOf(s, today, t);
+    // A repeating subtask's check here is today's, when it happens today.
+    const daily = !!s.repeat && occursOn(s, today, t);
+    const done = daily ? subDoneOn(s, today) : s.done;
+    const sid = `data-sid="${esc(s.id)}"`;
+    const repeatOptions = [['', '不重複'], ['daily', '每天'], ['weekly', '每週指定星期'], ['every', '每隔幾天']]
+      .map(([v, label]) => `<option value="${v}" ${s.repeat === v ? 'selected' : ''}>${label}</option>`).join('');
+    const days = s.repeat === 'weekly' ? `<div class="row form-row tight weekday-pick" role="group" aria-label="重複的星期">${WEEKDAYS.map((d, i) => {
+      const on = s.repeatDays.includes(i);
+      return `<button type="button" class="${on ? 'on' : ''}" data-act="sheet-sub-day" ${sid} data-d="${i}" aria-pressed="${on}">${d}</button>`;
+    }).join('')}</div>` : '';
+    const every = s.repeat === 'every'
+      ? `<label class="row form-row tight"><span class="form-label">每隔幾天</span><input type="number" min="1" max="365" inputmode="numeric" class="field-num" value="${s.repeatEvery}" data-ch="sheet-sub-every" ${sid}></label>`
+      : '';
+    return `<div class="sub-edit ${done ? 'is-done' : ''}" data-sid="${esc(s.id)}">
       <div class="row sub">
-        <button type="button" class="check small ${s.done ? 'on' : ''}" data-act="sheet-sub-toggle" data-sid="${esc(s.id)}" role="checkbox" aria-checked="${s.done}" aria-label="完成子任務"></button>
-        <input type="text" class="bare sub-title" value="${esc(s.title)}" placeholder="子任務名稱" data-in="sheet-sub-title" data-sid="${esc(s.id)}" aria-label="子任務名稱" maxlength="300">
-        <button type="button" class="date-chip btn-chip ${st === 'late' ? 'late' : ''}" data-act="sheet-sub-more" data-sid="${esc(s.id)}" aria-expanded="${open}">${esc(fmtRange(s.start, s.end))}</button>
+        <button type="button" class="check small ${done ? 'on' : ''}" data-act="sheet-sub-toggle" ${sid} ${daily ? `data-date="${today}"` : ''} role="checkbox" aria-checked="${done}" aria-label="${daily ? '完成今天的這一次' : '完成子任務'}"></button>
+        <input type="text" class="bare sub-title" value="${esc(s.title)}" placeholder="子任務名稱" data-in="sheet-sub-title" ${sid} aria-label="子任務名稱" maxlength="300">
+        <button type="button" class="date-chip btn-chip ${st === 'late' ? 'late' : ''}" data-act="sheet-sub-more" ${sid} aria-expanded="${open}">${esc(s.repeat ? repeatLabel(s) : fmtRange(s.start, s.end))}</button>
       </div>
       ${open ? `<div class="sub-more">
         <label class="row form-row tight"><span class="form-label">開始</span><input type="date" class="field-date" value="${esc(s.start || '')}" data-ch="sheet-sub-start" data-sid="${esc(s.id)}"></label>
         <label class="row form-row tight"><span class="form-label">結束</span><input type="date" class="field-date" value="${esc(s.end || '')}" data-ch="sheet-sub-end" data-sid="${esc(s.id)}"></label>
+        <label class="row form-row tight"><span class="form-label">重複</span><select class="field-select" data-ch="sheet-sub-repeat" ${sid} aria-label="重複">${repeatOptions}</select></label>
+        ${days}${every}
+        ${s.repeat ? `<p class="form-hint sub-hint">只會出現在符合的日子，每一天分開打勾。${s.done ? '' : `<button type="button" class="text-btn" data-act="sheet-sub-end-series" ${sid}>整個結束</button>`}</p>` : ''}
         <div class="row form-row tight"><input type="text" class="bare" value="${esc(s.notes)}" placeholder="子任務備註" data-in="sheet-sub-notes" data-sid="${esc(s.id)}" aria-label="子任務備註"></div>
         <div class="sub-tools">
           <button type="button" class="icon-btn" data-act="sheet-sub-move" data-sid="${esc(s.id)}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="上移">${icon.up}</button>
@@ -246,7 +263,22 @@ Object.assign(actions, {
   'sheet-sub-toggle': (el) => {
     const s = findSub(el);
     if (!s) return;
-    save(() => (s.done = !s.done));
+    save(() => (el.dataset.date ? toggleSubOn(s, el.dataset.date) : (s.done = !s.done)));
+    renderSubs();
+  },
+  'sheet-sub-day': (el) => {
+    const s = findSub(el);
+    if (!s) return;
+    const d = Number(el.dataset.d);
+    save(() => {
+      s.repeatDays = s.repeatDays.includes(d) ? s.repeatDays.filter((x) => x !== d) : [...s.repeatDays, d].sort((a, b) => a - b);
+    });
+    renderSubs();
+  },
+  'sheet-sub-end-series': (el) => {
+    const s = findSub(el);
+    if (!s) return;
+    save(() => (s.done = true));
     renderSubs();
   },
   'sheet-sub-more': (el) => {
@@ -318,6 +350,28 @@ Object.assign(changes, {
       if (s.start && s.end && s.end < s.start) s.end = s.start;
       fitParentToSubs(t);
     });
+    renderSubs();
+  },
+  'sheet-sub-repeat': (el) => {
+    const s = findSub(el);
+    if (!s) return;
+    save((t) => {
+      s.repeat = el.value;
+      // A repeat needs a range to run over; borrow the task's until one is set.
+      if (s.repeat) {
+        s.start ||= t.start;
+        s.end ||= t.end;
+        if (s.repeat === 'weekly' && !s.repeatDays.length && s.start) s.repeatDays = [(new Date(`${s.start}T00:00:00Z`).getUTCDay() + 6) % 7];
+        s.done = false;
+      }
+    });
+    renderSubs();
+  },
+  'sheet-sub-every': (el) => {
+    const s = findSub(el);
+    const n = parseInt(el.value, 10);
+    if (!s || !(n >= 1)) return;
+    save(() => (s.repeatEvery = Math.min(365, n)));
     renderSubs();
   },
   'sheet-sub-end': (el) => {

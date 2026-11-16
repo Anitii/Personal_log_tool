@@ -2,7 +2,8 @@
 import {
   DAY_MINUTES, DEFAULT_STATUS_COLORS, FREE_BLOCK_COLOR, PALETTE, STATUS, WEEKDAYS, addDays, blocksOn, deferTask, fitParentToSubs, fmtDuration,
   fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isImportant, makeSub, mondayOf, moveProject, newId, normalize, percent, plannedMinutes, setDone,
-  statusOf, subStatusOf, tasksForDay, toCSV, toDay, todayStr, toggleFocusDay, weekNumber, weekdayIdx,
+  isSubOverdue, occursOn, repeatLabel, statusOf, subDoneOn, subStatusOf, subsForDay, tasksForDay, toCSV, toDay, todayStr, toggleFocusDay,
+  toggleSubOn, weekNumber, weekdayIdx,
 } from './core.js';
 import { plainPreview } from './markdown.js';
 import {
@@ -67,7 +68,7 @@ export function starButton(t, iso) {
   return `<button type="button" class="star-btn ${on ? 'on' : ''}" data-act="toggle-focus" data-id="${esc(t.id)}" data-date="${esc(iso)}" ${t.priority === 3 ? 'disabled title="優先度為高的任務每天都算最重要"' : ''} aria-pressed="${on}" aria-label="標為這天最重要">${on ? icon.starOn : icon.star}</button>`;
 }
 
-const PLAN_SCALES = [['day', '日'], ['week', '週'], ['month', '月'], ['cal', '月曆']];
+const PLAN_SCALES = [['day', '日'], ['week', '週'], ['gantt', '甘特'], ['cal', '月曆']];
 
 export function planSegHTML() {
   return `<div class="seg plan-seg" role="group" aria-label="計畫檢視">${PLAN_SCALES.map(([k, label]) =>
@@ -87,14 +88,19 @@ export function stripHTML(blocks, now, act) {
   </button>`;
 }
 
-function subRow(t, s, today) {
-  const st = subStatusOf(s, today);
-  return `<div class="row sub ${s.done ? 'is-done' : ''}">
-    <button type="button" class="check small ${s.done ? 'on' : ''}" data-act="toggle-sub" data-id="${esc(t.id)}" data-sub="${esc(s.id)}" role="checkbox" aria-checked="${s.done}" aria-label="完成子任務：${esc(s.title)}"></button>
+// A repeating subtask is checked off for one day (`iso`) when it happens that day.
+export function subRow(t, s, today, iso = today) {
+  const daily = !!s.repeat && occursOn(s, iso, t);
+  const done = daily ? subDoneOn(s, iso) : s.done;
+  const st = subStatusOf(s, today, t);
+  const overdue = isSubOverdue(s, today);
+  const chip = s.repeat ? repeatLabel(s) : overdue ? `逾期｜${fmtRange(s.start, s.end)}` : fmtRange(s.start, s.end);
+  return `<div class="row sub ${done ? 'is-done' : ''}">
+    <button type="button" class="check small ${done ? 'on' : ''}" data-act="toggle-sub" data-id="${esc(t.id)}" data-sub="${esc(s.id)}" ${daily ? `data-date="${esc(iso)}"` : ''} role="checkbox" aria-checked="${done}" aria-label="完成子任務：${esc(s.title)}"></button>
     <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
-      <span class="row-title">${esc(s.title) || '<em>未命名子任務</em>'}</span>
+      <span class="row-title">${s.repeat ? `<span class="repeat-mark" aria-label="重複">↻</span> ` : ''}${esc(s.title) || '<em>未命名子任務</em>'}</span>
     </button>
-    <span class="date-chip ${st === 'late' ? 'late' : ''}">${esc(fmtRange(s.start, s.end))}</span>
+    <span class="date-chip ${st === 'late' || overdue ? 'late' : ''}">${esc(chip)}</span>
   </div>`;
 }
 
@@ -222,7 +228,7 @@ function overdueCard(today) {
         <button type="button" class="btn small" data-act="defer-task" data-id="${esc(t.id)}" data-to="today">改今天</button>
         <button type="button" class="btn small" data-act="defer-task" data-id="${esc(t.id)}" data-to="tomorrow">改明天</button>
       </div>
-    </div>`).join('');
+    </div>${lateSubs(t, today)}`).join('');
   const nodateRows = nodate.map((t) => `<div class="row triage">
       <span class="triage-gap"></span>
       <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}">
@@ -232,6 +238,11 @@ function overdueCard(today) {
       <div class="triage-actions"><button type="button" class="btn small" data-act="defer-task" data-id="${esc(t.id)}" data-to="today">排今天</button></div>
     </div>`).join('');
   return group('<span class="text-late">需要處理</span>', lateRows + nodateRows, `<span class="group-count">${late.length + nodate.length}</span>`);
+}
+
+function lateSubs(t, today) {
+  const subs = t.subtasks.filter((s) => isSubOverdue(s, today));
+  return subs.length ? `<div class="subs">${subs.map((s) => subRow(t, s, today)).join('')}</div>` : '';
 }
 
 function soonCard(today) {
@@ -272,13 +283,13 @@ export function renderToday() {
   const blocks = blocksOn(state, today);
 
   // Subtasks already due or under way are the actual to-dos, so they show without expanding.
-  const activeSubs = (t) => t.subtasks.filter((s) => !s.done && (!s.start || s.start <= today));
+  const activeSubs = (t) => subsForDay(t, today, today);
   const planned = (t) => {
     const total = plannedMinutes(blocks.filter((b) => b.taskId === t.id));
     return total ? `<span>已排 ${esc(fmtDuration(total))}</span>` : '';
   };
   const focusList = liveTasks()
-    .filter((t) => percent(t) < 100 && isActiveOn(t, today))
+    .filter((t) => percent(t) < 100 && (isActiveOn(t, today) || (t.end >= today && t.subtasks.some((s) => isSubOverdue(s, today)))))
     .sort((a, b) => Number(isImportant(b, today)) - Number(isImportant(a, today)) || a.end.localeCompare(b.end) || a.order - b.order);
   const dueLabel = (t) => (t.end === today ? '<span class="text-late">今天到期</span>' : '');
   const rows = focusList.map((t) =>
@@ -510,9 +521,11 @@ Object.assign(actions, {
   },
   'toggle-sub': (el) => {
     const t = getTask(el.dataset.id);
-    const s = t.subtasks.find((x) => x.id === el.dataset.sub);
+    const s = t?.subtasks.find((x) => x.id === el.dataset.sub);
+    if (!s) return;
     commit(() => {
-      s.done = !s.done;
+      if (el.dataset.date) toggleSubOn(s, el.dataset.date);
+      else s.done = !s.done;
       touch(t);
     });
   },

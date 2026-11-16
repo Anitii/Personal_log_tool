@@ -42,6 +42,12 @@ export const prefs = {
 if (prefs.zoom === 'month') prefs.plan = 'month';
 delete prefs.zoom;
 prefs.status = ''; // a status filter is a one-off drill-down, not a saved view
+// Version 4 merged the week and month Gantt into one zoomable "甘特"; "週" is now the week planner.
+if (!prefs.planV) {
+  if (prefs.plan === 'month') prefs.ganttDayW = 11;
+  if (prefs.plan === 'week' || prefs.plan === 'month') prefs.plan = 'gantt';
+  prefs.planV = 4;
+}
 
 // Which day the planner and the diary are showing; null means today.
 export const focusDate = { plan: null, diary: null };

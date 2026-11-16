@@ -77,9 +77,11 @@ export function inkOn(hex) {
 
 /* ---------- Status and progress ---------- */
 
+// A repeating subtask counts by the share of its days that were checked off.
 export function percent(task) {
   if (task.subtasks?.length) {
-    return Math.round((task.subtasks.filter((s) => s.done).length / task.subtasks.length) * 100);
+    const sum = task.subtasks.reduce((n, s) => n + subFraction(s, task), 0);
+    return Math.round((sum / task.subtasks.length) * 100);
   }
   return task.progress || 0;
 }
@@ -95,11 +97,86 @@ function statusFrom(done, start, end, today) {
   return 'doing';
 }
 export const statusOf = (task, today) => statusFrom(percent(task) >= 100, task.start, task.end, today);
-export const subStatusOf = (sub, today) => statusFrom(sub.done, sub.start, sub.end, today);
+export const subStatusOf = (sub, today, task = null) =>
+  statusFrom(sub.done || (!!sub.repeat && subFraction(sub, task) >= 1), sub.start, sub.end, today);
 
 export function setDone(task, done) {
   task.progress = done ? 100 : 0;
-  task.subtasks.forEach((s) => (s.done = done));
+  task.subtasks.forEach((s) => {
+    s.done = done;
+    if (!done) s.doneDays = [];
+  });
+}
+
+/* ---------- Repeating subtasks ---------- */
+
+// A repeating subtask happens on some days of its date range (the parent's, if it has none)
+// and each of those days is checked off on its own. `done` ends the whole series.
+export const REPEATS = { daily: '每天', weekly: '每週', every: '每隔幾天' };
+
+export function subRange(sub, task) {
+  const from = sub.start || task?.start;
+  const to = sub.end || task?.end;
+  return from && to && to >= from ? { from, to } : null;
+}
+
+export function occursOn(sub, iso, task) {
+  const r = subRange(sub, task);
+  if (!r || iso < r.from || iso > r.to) return false;
+  if (sub.repeat === 'weekly') return (sub.repeatDays || []).includes(weekdayIdx(toDay(iso)));
+  if (sub.repeat === 'every') return (toDay(iso) - toDay(r.from)) % Math.max(1, sub.repeatEvery || 1) === 0;
+  return true;
+}
+
+export function occurrences(sub, task) {
+  const r = subRange(sub, task);
+  if (!r || !sub.repeat) return [];
+  const out = [];
+  for (let n = toDay(r.from), last = toDay(r.to); n <= last && out.length < 1000; n++) {
+    const iso = fromDay(n);
+    if (occursOn(sub, iso, task)) out.push(iso);
+  }
+  return out;
+}
+
+export const subDoneOn = (sub, iso) => sub.done || (!!sub.repeat && (sub.doneDays || []).includes(iso));
+
+export function toggleSubOn(sub, iso) {
+  if (!sub.repeat) {
+    sub.done = !sub.done;
+    return;
+  }
+  const days = sub.doneDays || [];
+  sub.doneDays = days.includes(iso) ? days.filter((d) => d !== iso) : [...days, iso];
+}
+
+export function subFraction(sub, task) {
+  if (sub.done) return 1;
+  if (!sub.repeat) return 0;
+  const occ = occurrences(sub, task);
+  return occ.length ? occ.filter((d) => (sub.doneDays || []).includes(d)).length / occ.length : 0;
+}
+
+export function repeatLabel(sub) {
+  if (sub.repeat === 'daily') return '每天';
+  if (sub.repeat === 'weekly') {
+    const days = sub.repeatDays || [];
+    return days.length ? `每週${days.map((d) => WEEKDAYS[d]).join('、')}` : '每週（未選星期）';
+  }
+  if (sub.repeat === 'every') return `每 ${sub.repeatEvery} 天`;
+  return '';
+}
+
+// One-off subtasks past their end date and not finished. They stay on today's lists until
+// they are checked off or given new dates.
+export const isSubOverdue = (sub, today) => !sub.repeat && !sub.done && !!sub.end && sub.end < today;
+
+// The subtasks that belong on one day's list.
+export function subsForDay(task, iso, today, { withDone = false } = {}) {
+  return task.subtasks.filter((s) => {
+    if (occursOn(s, iso, task)) return withDone || !subDoneOn(s, iso);
+    return iso === today && isSubOverdue(s, today);
+  });
 }
 
 /* ---------- Keeping a task and its subtasks consistent ---------- */
@@ -172,7 +249,7 @@ export function fmtDuration(m) {
 export function makeBlock(fields = {}) {
   return {
     id: newId(), date: null, start: 540, end: 600, taskId: '', subId: '', title: '', color: '', notes: '',
-    done: false, updatedAt: Date.now(), ...fields,
+    done: false, trayHidden: false, updatedAt: Date.now(), ...fields,
   };
 }
 
@@ -235,7 +312,7 @@ export function blockSegments(start, end) {
 export function tasksForDay(state, iso, today) {
   return state.tasks
     .filter((t) => !t.archivedAt && percent(t) < 100 && t.start && t.end && t.end >= t.start
-      && (isActiveOn(t, iso) || (iso === today && t.end < today)))
+      && (isActiveOn(t, iso) || (iso === today && (t.end < today || t.subtasks.some((s) => isSubOverdue(s, today))))))
     .sort((a, b) => Number(isImportant(b, iso)) - Number(isImportant(a, iso)) || a.end.localeCompare(b.end) || a.order - b.order);
 }
 
@@ -303,7 +380,9 @@ export function makeTask(fields = {}) {
   };
 }
 
-export const makeSub = (fields = {}) => ({ id: newId(), title: '', start: null, end: null, done: false, notes: '', ...fields });
+export const makeSub = (fields = {}) => ({
+  id: newId(), title: '', start: null, end: null, done: false, notes: '', repeat: '', repeatDays: [], repeatEvery: 2, doneDays: [], ...fields,
+});
 
 // Defaults carry timestamp 0 so a new device's first sync can never overwrite real edits.
 export function defaultState() {
@@ -365,6 +444,12 @@ export function normalize(raw) {
         subtasks: Array.isArray(t.subtasks)
           ? t.subtasks.filter((s) => s && validId(s.id)).map((s) => ({
               id: s.id, title: str(s.title, 300), start: date(s.start), end: date(s.end), done: s.done === true, notes: str(s.notes),
+              repeat: s.repeat in REPEATS ? s.repeat : '',
+              repeatDays: Array.isArray(s.repeatDays)
+                ? [...new Set(s.repeatDays.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort((x, y) => x - y)
+                : [],
+              repeatEvery: clamp(Math.round(num(s.repeatEvery, 2)), 1, 365),
+              doneDays: Array.isArray(s.doneDays) ? [...new Set(s.doneDays.filter(isDate))].sort().slice(-2000) : [],
             }))
           : [],
         order: num(t.order, now),
@@ -387,6 +472,7 @@ export function normalize(raw) {
           color: hex(b.color),
           notes: str(b.notes),
           done: b.done === true,
+          trayHidden: b.trayHidden === true,
           updatedAt: num(b.updatedAt, now),
         };
       })
@@ -478,7 +564,7 @@ export function toCSV(state, today) {
   for (const t of [...state.tasks].sort((x, y) => x.order - y.order)) {
     lines.push([projectName(t.projectId), t.title, '', t.start, t.end, `${percent(t)}%`, STATUS[statusOf(t, today)].label, t.notes].map(q).join(','));
     for (const s of t.subtasks) {
-      lines.push([projectName(t.projectId), t.title, s.title, s.start, s.end, s.done ? '100%' : '0%', STATUS[subStatusOf(s, today)].label, s.notes].map(q).join(','));
+      lines.push([projectName(t.projectId), t.title, s.title + (s.repeat ? `（${repeatLabel(s)}）` : ''), s.start, s.end, `${Math.round(subFraction(s, t) * 100)}%`, STATUS[subStatusOf(s, today, t)].label, s.notes].map(q).join(','));
     }
   }
   return '﻿' + lines.join('\r\n'); // BOM: lets Excel detect UTF-8

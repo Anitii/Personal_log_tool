@@ -8,6 +8,8 @@ import { applyStatusColors, applyTheme, refreshSyncLine, renderSettings, renderT
 import { initPlannerGestures, planToday, plannerSuppressClick, renderPlanner, setPlannerRender } from './planner.js';
 import { calendarToday, renderCalendar, setCalendarRender } from './calendar.js';
 import { renderDiary, setDiaryRender } from './diary.js';
+import { initWeekGestures, renderWeek, setWeekRender, weekSuppressClick, weekToday } from './week.js';
+import { initPinch } from './pinch.js';
 
 const main = document.getElementById('main');
 const sidebar = document.getElementById('sidebar');
@@ -68,6 +70,7 @@ function render() {
     case 'gantt':
       if (prefs.plan === 'day') renderPlanner(main);
       else if (prefs.plan === 'cal') renderCalendar(main);
+      else if (prefs.plan === 'week') renderWeek(main);
       else renderGantt(main);
       break;
     case 'diary': renderDiary(main); break;
@@ -128,6 +131,7 @@ Object.assign(actions, {
   'plan-today': () => {
     if (prefs.plan === 'day') planToday();
     else if (prefs.plan === 'cal') calendarToday();
+    else if (prefs.plan === 'week') weekToday();
     else {
       gantt.pendingToday = true;
       schedule();
@@ -146,6 +150,7 @@ function init() {
     beforeClick: (e) => {
       if (shouldSuppressClick() && e.target.closest('[data-bar]')) return false;
       if (plannerSuppressClick() && e.target.closest('.day-view')) return false;
+      if (weekSuppressClick() && e.target.closest('.wk-view')) return false;
       if (gantt.menuOpen && !e.target.closest('.menu-wrap')) {
         gantt.menuOpen = false;
         schedule();
@@ -156,10 +161,13 @@ function init() {
   initSheet();
   initGanttDrag();
   initPlannerGestures();
+  initWeekGestures();
+  initPinch();
   setRerender(schedule);
   setGanttRender(schedule);
   setPlannerRender(schedule);
   setCalendarRender(schedule);
+  setWeekRender(schedule);
   setDiaryRender(schedule);
   subscribe(schedule);
   onSyncStatus(() => {
@@ -176,7 +184,7 @@ function init() {
 
   // The "now" markers keep moving while the page sits open.
   setInterval(() => {
-    const live = prefs.view === 'today' || (prefs.view === 'gantt' && prefs.plan === 'day');
+    const live = prefs.view === 'today' || (prefs.view === 'gantt' && ['day', 'week'].includes(prefs.plan));
     if (live && document.visibilityState === 'visible' && !gantt.dragging) schedule();
   }, 60000);
 

@@ -1,8 +1,9 @@
 // Month calendar. Each day can mark its most important tasks; the rest fade by default.
 import {
-  FREE_BLOCK_COLOR, WEEKDAYS, addMonths, fmtRange, fromDay, inkOn, isActiveOn, isImportant, layoutWeek, monthWeeks, percent,
+  FREE_BLOCK_COLOR, WEEKDAYS, addMonths, fmtMD, fmtRange, fromDay, inkOn, isActiveOn, isImportant, layoutWeek, mondayOf, monthWeeks, percent,
   toDay, todayStr, toggleFocusDay, weekNumber, weekdayIdx,
 } from './core.js';
+import { onPinch } from './pinch.js';
 import { addTask, commit, focusDate, getTask, prefs, setPref, state, taskColor, touch, visibleTasks } from './store.js';
 import { actions, esc, icon } from './ui.js';
 import { closeSheet, openPanel, openTask } from './sheet.js';
@@ -13,11 +14,49 @@ const DAY_HEAD_H = 28;
 const MORE_H = 15;
 const MIN_ROW_H = 92;
 
-const calendar = { month: null };
+// The span zooms with a pinch: the whole month, or a closer look at three or two weeks.
+const SPANS = ['month', 3, 2];
+const SPAN_LABEL = { month: '月', 3: '3 週', 2: '2 週' };
+const calendar = { month: null, start: null };
 let requestRender = () => {};
 export const setCalendarRender = (fn) => (requestRender = fn);
 
 const currentMonth = () => (calendar.month ||= todayStr().slice(0, 7));
+const span = () => (SPANS.includes(prefs.calSpan) ? prefs.calSpan : 'month');
+
+// The first Monday shown when zoomed in: this week if it falls in the month on screen.
+function weekStart() {
+  if (calendar.start == null) {
+    const today = todayStr();
+    const ym = currentMonth();
+    calendar.start = mondayOf(toDay(today.slice(0, 7) === ym ? today : `${ym}-01`));
+  }
+  return calendar.start;
+}
+
+function setSpan(next) {
+  if (next === span()) return;
+  if (next === 'month') {
+    calendar.month = fromDay(weekStart() + 3).slice(0, 7); // the month most of the first week falls in
+  } else if (span() === 'month') calendar.start = null;
+  setPref({ calSpan: next });
+}
+
+let pinchAcc = 1;
+let pinchQuietUntil = 0;
+onPinch('.cal-view .cal-scroll', (f) => {
+  if (performance.now() < pinchQuietUntil) return;
+  pinchAcc *= f;
+  const i = SPANS.indexOf(span());
+  let next = null;
+  if (pinchAcc > 1.3 && i < SPANS.length - 1) next = SPANS[i + 1];
+  else if (pinchAcc < 0.77 && i > 0) next = SPANS[i - 1];
+  else if (pinchAcc > 1.3 || pinchAcc < 0.77) pinchAcc = 1;
+  if (next == null) return;
+  pinchAcc = 1;
+  pinchQuietUntil = performance.now() + 350; // one pinch, one step
+  setSpan(next);
+});
 
 // One bar becomes several runs when its importance changes partway through the week.
 function barRuns(bar, monday) {
@@ -59,7 +98,9 @@ export function renderCalendar(main) {
   const today = todayStr();
   const ym = currentMonth();
   const [y, m] = ym.split('-').map(Number);
-  const weeks = monthWeeks(ym);
+  const zoomed = span() !== 'month';
+  const weeks = zoomed ? Array.from({ length: span() }, (_, i) => weekStart() + 7 * i) : monthWeeks(ym);
+  const title = zoomed ? `${fmtMD(fromDay(weeks[0]))}–${fmtMD(fromDay(weeks[weeks.length - 1] + 6))}` : `${y} 年 ${m} 月`;
   const tasks = visibleTasks(today, { archived: true }); // the calendar is also the record of what happened
 
   const avail = (main.clientHeight || innerHeight) - (innerWidth < 768 ? 200 : 150);
@@ -75,13 +116,13 @@ export function renderCalendar(main) {
       const n = monday + i;
       const iso = fromDay(n);
       const hidden = bars.filter((b) => b.lane >= lanes && b.from <= i && i <= b.to).length;
-      if (iso.slice(0, 7) === ym && tasks.some((t) => isActiveOn(t, iso) && isImportant(t, iso))) markedThisMonth = true;
-      cells.push(`<button type="button" class="cal-day ${iso.slice(0, 7) !== ym ? 'out' : ''} ${iso === today ? 'is-today' : ''} ${i >= 5 ? 'weekend' : ''}" data-act="cal-day" data-date="${iso}" aria-label="${iso}">
-        <b>${Number(iso.slice(8))}</b>
+      if ((zoomed || iso.slice(0, 7) === ym) && tasks.some((t) => isActiveOn(t, iso) && isImportant(t, iso))) markedThisMonth = true;
+      cells.push(`<button type="button" class="cal-day ${!zoomed && iso.slice(0, 7) !== ym ? 'out' : ''} ${iso === today ? 'is-today' : ''} ${i >= 5 ? 'weekend' : ''}" data-act="cal-day" data-date="${iso}" aria-label="${iso}">
+        <b>${zoomed && (iso.endsWith('-01') || n === weeks[0]) ? `${Number(iso.slice(5, 7))}/` : ''}${Number(iso.slice(8))}</b>
         ${hidden ? `<small class="cal-more">+${hidden}</small>` : ''}
       </button>`);
     }
-    return `<div class="cal-week" style="min-height:${MIN_ROW_H}px">
+    return `<div class="cal-week ${zoomed ? 'zoomed' : ''}" style="min-height:${MIN_ROW_H}px">
       <div class="cal-weeknum">${weekNumber(monday, state.settings)}</div>
       <div class="cal-week-body">
         <div class="cal-cells">${cells.join('')}</div>
@@ -94,14 +135,15 @@ export function renderCalendar(main) {
 
   main.innerHTML = `<div class="cal-view">
     <div class="g-head-wrap">
-      ${headerHTML('計畫', `月曆${hint}`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
+      ${headerHTML('計畫', `月曆｜雙指縮放看月、3 週或 2 週${hint}`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
       <div class="g-controls">
         ${planSegHTML()}
         <div class="tb-nav">
-          <button type="button" class="btn-circle" data-act="cal-shift" data-n="-1" aria-label="上個月">${icon.back}</button>
-          <b>${y} 年 ${m} 月</b>
-          <button type="button" class="btn-circle" data-act="cal-shift" data-n="1" aria-label="下個月">${icon.chevR}</button>
+          <button type="button" class="btn-circle" data-act="cal-shift" data-n="-1" aria-label="往前">${icon.back}</button>
+          <b>${title}</b>
+          <button type="button" class="btn-circle" data-act="cal-shift" data-n="1" aria-label="往後">${icon.chevR}</button>
         </div>
+        <div class="seg span-seg" role="group" aria-label="範圍">${SPANS.map((k) => `<button type="button" class="${span() === k ? 'on' : ''}" data-act="cal-span" data-v="${k}" aria-pressed="${span() === k}">${SPAN_LABEL[k]}</button>`).join('')}</div>
         ${chipsHTML()}
         <button type="button" class="chip tb-toggle ${prefs.calDim ? 'on' : ''}" data-act="cal-dim" aria-pressed="${prefs.calDim}">淡化不重要</button>
       </div>
@@ -145,9 +187,15 @@ function dayPanel(iso) {
 Object.assign(actions, {
   'cal-dim': () => setPref({ calDim: !prefs.calDim }),
   'cal-shift': (el) => {
-    calendar.month = addMonths(currentMonth(), Number(el.dataset.n));
+    const n = Number(el.dataset.n);
+    if (span() === 'month') calendar.month = addMonths(currentMonth(), n);
+    else {
+      calendar.start = weekStart() + 7 * n * span();
+      calendar.month = fromDay(calendar.start + 3).slice(0, 7);
+    }
     requestRender();
   },
+  'cal-span': (el) => setSpan(el.dataset.v === 'month' ? 'month' : Number(el.dataset.v)),
   'cal-day': (el) => dayPanel(el.dataset.date),
   'cal-star': (el) => {
     const t = getTask(el.dataset.id);
@@ -177,5 +225,6 @@ Object.assign(actions, {
 
 export function calendarToday() {
   calendar.month = todayStr().slice(0, 7);
+  calendar.start = null;
   requestRender();
 }

@@ -1,15 +1,20 @@
 // Gantt view. Geometry is plain date→pixel arithmetic; while dragging, only the affected
 // bars are touched inside requestAnimationFrame and state changes once on release.
 import {
-  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtMD, fmtRange, fromDay, inkOn, mondayOf, percent, shiftTask,
-  statusOf, subStatusOf, toDay, todayStr, weekNumber, weekdayIdx,
+  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtMD, fmtRange, fromDay, inkOn, mondayOf, occurrences, percent, repeatLabel, shiftTask,
+  statusOf, subDoneOn, subStatusOf, toDay, todayStr, weekNumber, weekdayIdx,
 } from './core.js';
-import { commit, getProject, getTask, prefs, setPref, state, touch, visibleTasks } from './store.js';
+import { commit, getProject, getTask, prefs, savePrefs, setPref, state, touch, visibleTasks } from './store.js';
+import { onPinch } from './pinch.js';
 import { actions, changes, esc, icon } from './ui.js';
 import { chipsHTML, emptyHTML, headerHTML, planSegHTML } from './views.js';
 
-// Week scale shows every day; month scale shows whole weeks, grouped by month.
-const ZOOM = { week: { w: 44, phone: 38 }, month: { w: 11, phone: 9 } };
+// One continuous zoom, set by pinching. Wide enough days show one column per day, grouped by
+// week; below DAY_MIN the smallest unit becomes the week, grouped by month.
+const MIN_W = 6;
+const MAX_W = 84;
+const DAY_MIN = 18;
+const TIGHT = 30; // narrower days drop the weekday name
 const ROW_H = 48;
 const SUB_H = 38;
 const NARROW = 768;
@@ -36,10 +41,16 @@ function layout() {
     phone,
     canDetail,
     detail,
-    dayW: phone ? ZOOM[prefs.plan].phone : ZOOM[prefs.plan].w,
+    dayW: dayWidth(phone),
     labelW: detail ? 500 : phone ? 136 : 228,
   };
 }
+
+export function dayWidth(phone = innerWidth < NARROW) {
+  const w = Number(prefs.ganttDayW);
+  return Number.isFinite(w) ? Math.min(MAX_W, Math.max(MIN_W, w)) : phone ? 38 : 44;
+}
+const coarse = (dayW) => dayW < DAY_MIN;
 
 function range(items, today) {
   let min = today - 21;
@@ -94,6 +105,18 @@ function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rang
   </div>`;
 }
 
+function repeatHTML(t, s, colorStyle) {
+  const attrs = `data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}"`;
+  const occ = occurrences(s, t).filter((d) => toDay(d) >= view.start && toDay(d) <= view.end);
+  if (coarse(view.dayW) || view.dayW < 12) {
+    if (!occ.length) return '';
+    const g = barGeom(toDay(occ[0]), toDay(occ[occ.length - 1]));
+    return `<div class="rep-band" style="${colorStyle}left:${g.left}px;width:${g.width}px" ${attrs} role="button" tabindex="0" aria-label="${esc(s.title)}，${esc(repeatLabel(s))}"></div>`;
+  }
+  const size = Math.min(14, view.dayW - 6);
+  return occ.map((d) => `<i class="rep-dot ${subDoneOn(s, d) ? 'on' : ''}" style="${colorStyle}left:${(toDay(d) - view.start) * view.dayW + view.dayW / 2 - size / 2}px;width:${size}px;height:${size}px" ${attrs} title="${esc(d)}"></i>`).join('');
+}
+
 function labelHTML(t, st, pct, l) {
   const hasSubs = t.subtasks.length > 0;
   const collapsed = !!prefs.collapsed[t.id];
@@ -117,8 +140,9 @@ function labelHTML(t, st, pct, l) {
 function headerRows(l, today) {
   const { start, days } = view;
   const { dayW } = l;
+  const weekly = coarse(dayW);
   let groups = '';
-  if (prefs.plan === 'month') {
+  if (weekly) {
     let i = 0;
     while (i < days) {
       const iso = fromDay(start + i);
@@ -131,30 +155,32 @@ function headerRows(l, today) {
   } else {
     for (let i = 0; i < days; i += 7) {
       const a = start + i;
-      groups += `<div class="g-group" style="width:${7 * dayW}px"><span>第 ${weekNumber(a, state.settings)} 週｜${fmtMD(fromDay(a))}–${fmtMD(fromDay(a + 6))}</span></div>`;
+      const label = 7 * dayW >= 170 ? `第 ${weekNumber(a, state.settings)} 週｜${fmtMD(fromDay(a))}–${fmtMD(fromDay(a + 6))}` : `W${weekNumber(a, state.settings)}`;
+      groups += `<div class="g-group" style="width:${7 * dayW}px"><span>${label}</span></div>`;
     }
   }
 
   let cells = '';
-  if (prefs.plan === 'month') {
+  if (weekly) {
     for (let i = 0; i < days; i += 7) {
       const isThisWeek = today >= start + i && today < start + i + 7;
-      cells += `<div class="g-day week-cell ${isThisWeek ? 'is-today-week' : ''}" style="width:${7 * dayW}px">${fmtMD(fromDay(start + i))}</div>`;
+      const label = 7 * dayW >= 40 ? fmtMD(fromDay(start + i)) : '';
+      cells += `<div class="g-day week-cell ${isThisWeek ? 'is-today-week' : ''}" style="width:${7 * dayW}px">${label}</div>`;
     }
   } else {
     for (let i = 0; i < days; i++) {
       const n = start + i;
       const wd = weekdayIdx(n);
       const dateNum = Number(fromDay(n).slice(8));
-      cells += `<div class="g-day ${wd === 5 ? 'sat' : wd === 6 ? 'sun' : ''} ${n === today ? 'is-today' : ''}" style="width:${dayW}px">
-        <small>${WEEKDAYS[wd]}</small><b>${dateNum}</b></div>`;
+      cells += `<div class="g-day ${dayW < TIGHT ? 'tight' : ''} ${wd === 5 ? 'sat' : wd === 6 ? 'sun' : ''} ${n === today ? 'is-today' : ''}" style="width:${dayW}px">
+        ${dayW < TIGHT ? '' : `<small>${WEEKDAYS[wd]}</small>`}<b>${dateNum}</b></div>`;
     }
   }
   return { groups, cells };
 }
 
 function weekendStripes(l) {
-  if (prefs.plan === 'month') return '';
+  if (coarse(l.dayW)) return '';
   let html = '';
   const first = view.start; // always a Monday
   for (let i = 5; i < view.days; i += 7) {
@@ -170,7 +196,15 @@ export function renderGantt(main) {
   const items = visibleTasks(todayIso, { archived: prefs.ganttArchived });
   const l = layout();
   const r = range(state.tasks, today);
-  view = { ...r, dayW: l.dayW, labelW: l.labelW };
+  // The axis must reach past both edges of the screen around the anchor, or the browser clamps
+  // the scroll position and a zoom drifts away from the day it was centered on.
+  const want = gantt.pendingToday || gantt.anchor == null ? today - 2 : gantt.anchor;
+  const viewW = Math.max(320, (main.clientWidth || innerWidth) - l.labelW);
+  if (want < r.start + 1) r.start = mondayOf(Math.floor(want)) - 7;
+  const needEnd = Math.ceil(want + viewW / l.dayW) + 7;
+  if (needEnd > r.end) r.end = mondayOf(needEnd) + 6;
+  r.days = r.end - r.start + 1;
+  view ={ ...r, dayW: l.dayW, labelW: l.labelW };
 
   const menu = gantt.menuOpen ? `<div class="menu" role="menu">
       ${l.canDetail ? `<label class="menu-item">精簡模式：只看行動事項<input type="checkbox" class="switch" data-ch="gantt-compact" ${prefs.compact ? 'checked' : ''}></label>` : ''}
@@ -180,18 +214,22 @@ export function renderGantt(main) {
       <label class="menu-item">色條依專案上色<input type="checkbox" class="switch" data-ch="gantt-bar-color" ${prefs.barColor === 'project' ? 'checked' : ''}></label>
     </div>` : '';
 
-  const trailing = `<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>
+  const trailing = `<div class="zoom-btns" role="group" aria-label="縮放">
+      <button type="button" data-act="gantt-zoom" data-f="0.7" aria-label="縮小，看更長的時間">−</button>
+      <button type="button" data-act="gantt-zoom" data-f="1.43" aria-label="放大，看每一天">+</button></div>
+    <button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>
     <div class="menu-wrap"><button type="button" class="btn-circle" data-act="gantt-menu" aria-label="顯示選項" aria-expanded="${gantt.menuOpen}">${icon.more}</button>${menu}</div>`;
 
   const legend = `<div class="legend" aria-label="圖例">
     ${['todo', 'doing', 'done', 'late'].map((k) => `<span><i class="lg s-${k}"></i>${STATUS[k].label}</span>`).join('')}
     <span><i class="lg-diamond"></i>單日任務</span>
-    <span class="legend-hint">${l.phone ? '長按色條可拖曳' : '拖曳色條改日期，拖邊緣改長度'}</span>
+    <span><i class="lg-rep"></i>重複子任務</span>
+    <span class="legend-hint">${l.phone ? '雙指縮放切換天／週｜長按色條可拖曳' : '觸控板雙指縮放切換天／週｜拖曳色條改日期'}</span>
   </div>`;
 
   const week = weekNumber(today, state.settings);
   const headHTML = `<div class="g-head-wrap">
-      ${headerHTML('計畫', `本週第 ${week} 週`, trailing)}
+      ${headerHTML('計畫', `甘特｜本週第 ${week} 週｜${coarse(l.dayW) ? '以週為單位' : '以天為單位'}`, trailing)}
       <div class="g-controls">${planSegHTML()}${chipsHTML()}</div>
     </div>`;
 
@@ -219,12 +257,15 @@ export function renderGantt(main) {
     </div>`);
     if (t.subtasks.length && !prefs.collapsed[t.id]) {
       for (const s of t.subtasks) {
-        const sst = subStatusOf(s, todayIso);
+        const sst = subStatusOf(s, todayIso, t);
         const sDated = s.start && s.end && s.end >= s.start;
+        const track = s.repeat
+          ? repeatHTML(t, s, barColorStyle(t))
+          : sDated ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: s.start, end: s.end, st: sst, pct: 0, isSub: true, range: fmtRange(s.start, s.end), colorStyle: barColorStyle(t) }) : '';
         rows.push(`<div class="g-row is-sub" style="height:${SUB_H}px">
           <div class="g-label sub-label"><button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
-            <span class="g-name ${s.done ? 'struck' : ''}">${esc(s.title) || '<em>未命名子任務</em>'}</span></button></div>
-          <div class="g-track" style="width:${tw}px">${sDated ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: s.start, end: s.end, st: sst, pct: 0, isSub: true, range: fmtRange(s.start, s.end), colorStyle: barColorStyle(t) }) : ''}</div>
+            <span class="g-name ${sst === 'done' ? 'struck' : ''}">${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}</span></button></div>
+          <div class="g-track" style="width:${tw}px">${track}</div>
         </div>`);
       }
     }
@@ -243,11 +284,11 @@ export function renderGantt(main) {
           <div class="g-corner"><span class="g-corner-title">行動事項</span>${detailHead}</div>
           <div class="g-head-time" style="width:${tw}px">
             <div class="g-groups">${groups}</div>
-            <div class="g-days ${prefs.plan}">${cells}</div>
+            <div class="g-days ${coarse(l.dayW) ? 'month' : 'week'}">${cells}</div>
           </div>
         </div>
         <div class="g-body">
-          <div class="g-bg ${prefs.plan}" aria-hidden="true">${weekendStripes(l)}${showToday ? `<i class="g-now" style="left:${(today - r.start) * l.dayW + l.dayW / 2}px"></i>` : ''}</div>
+          <div class="g-bg ${coarse(l.dayW) ? 'month' : 'week'}" aria-hidden="true">${weekendStripes(l)}${showToday ? `<i class="g-now" style="left:${(today - r.start) * l.dayW + l.dayW / 2}px"></i>` : ''}</div>
           ${rows.join('') || '<div class="g-none">這個篩選條件下沒有任務</div>'}
           <div class="g-row g-add" style="height:${ROW_H}px"><div class="g-label"><button type="button" class="g-add-btn" data-act="new-task">${icon.plus}<span>新增任務</span></button></div><div class="g-track" style="width:${tw}px"></div></div>
         </div>
@@ -290,9 +331,31 @@ function onScroll(e) {
 let requestRender = () => {};
 export const setGanttRender = (fn) => (requestRender = fn);
 
+/* ---------- Zoom: keep the day under the fingers where it is ---------- */
+
+let saveTimer = 0;
+function zoomBy(factor, clientX) {
+  const scroller = document.querySelector('.g-scroll');
+  if (!view || !scroller || gantt.dragging) return;
+  const cur = dayWidth();
+  const next = Math.min(MAX_W, Math.max(MIN_W, cur * factor));
+  if (Math.abs(next - cur) < 0.01) return;
+  const rect = scroller.getBoundingClientRect();
+  const px = clientX == null ? (rect.width - view.labelW) / 2 : Math.max(0, clientX - rect.left - view.labelW);
+  const anchor = gantt.anchor ?? view.start + scroller.scrollLeft / cur;
+  const dayAt = anchor + px / cur;
+  gantt.anchor = dayAt - px / next;
+  prefs.ganttDayW = next;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(savePrefs, 300);
+  requestRender();
+}
+onPinch('.gantt-view .g-scroll', (f, x) => zoomBy(f, x));
+
 /* ---------- Actions ---------- */
 
 Object.assign(actions, {
+  'gantt-zoom': (el) => zoomBy(Number(el.dataset.f), null),
   'gantt-menu': () => {
     gantt.menuOpen = !gantt.menuOpen;
     requestRender();

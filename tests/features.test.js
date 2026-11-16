@@ -24,6 +24,11 @@ test('upgrading version 1 data keeps every task and only softens the old colors'
   };
   const s = normalize(JSON.parse(JSON.stringify(v1)));
   const { color, focusDays, archivedAt, ...task } = s.tasks[0];
+  task.subtasks = task.subtasks.map(({ repeat, repeatDays, repeatEvery, doneDays, ...sub }) => {
+    assert.equal(repeat, '', 'old subtasks do not repeat');
+    assert.deepEqual(doneDays, []);
+    return sub;
+  });
   assert.deepEqual(task, v1.tasks[0], 'every saved task field survives');
   assert.equal(color, '');
   assert.deepEqual(focusDays, []);
@@ -291,4 +296,42 @@ test('projects keep a synced order', () => {
   const merged = merge(other, s);
   assert.deepEqual(merged.projects.map((p) => p.id), ['a', 'c', 'b'], 'the move reaches the other device');
   assert.deepEqual(normalize(JSON.parse(JSON.stringify(merged))).projects.map((p) => p.id), ['a', 'c', 'b']);
+});
+
+test('a repeating subtask shows only on its days and is checked off day by day', async () => {
+  const { occursOn, occurrences, subsForDay, toggleSubOn, percent: pct, repeatLabel } = await import('../js/core.js');
+  // 2026-11-02 is a Monday.
+  const sub = makeSub({ title: '跑步', start: '2026-11-02', end: '2026-11-15', repeat: 'weekly', repeatDays: [0, 2] });
+  const t = makeTask({ start: '2026-11-02', end: '2026-11-15', subtasks: [sub] });
+  assert.equal(repeatLabel(sub), '每週一、三');
+  assert.deepEqual(occurrences(sub, t), ['2026-11-02', '2026-11-04', '2026-11-09', '2026-11-11']);
+  assert.equal(occursOn(sub, '2026-11-03', t), false);
+  assert.equal(subsForDay(t, '2026-11-03', TODAY).length, 0, 'not on a Tuesday');
+  assert.equal(subsForDay(t, '2026-11-04', TODAY).length, 1);
+  toggleSubOn(sub, '2026-11-02');
+  assert.equal(subsForDay(t, '2026-11-02', TODAY).length, 0, 'checked off for Monday');
+  assert.equal(subsForDay(t, '2026-11-04', TODAY).length, 1, 'still due on Wednesday');
+  assert.equal(pct(t), 25);
+  const every = makeSub({ start: '2026-11-02', end: '2026-11-08', repeat: 'every', repeatEvery: 3 });
+  assert.deepEqual(occurrences(every, t), ['2026-11-02', '2026-11-05', '2026-11-08']);
+  const n = normalize(JSON.parse(JSON.stringify({ ...defaultState(), tasks: [t] })));
+  assert.deepEqual(n.tasks[0].subtasks[0].doneDays, ['2026-11-02'], 'per-day checks survive saving');
+  assert.deepEqual(n.tasks[0].subtasks[0].repeatDays, [0, 2]);
+});
+
+test('an overdue subtask stays on today until it is done or moved', async () => {
+  const { subsForDay } = await import('../js/core.js');
+  const late = makeSub({ title: '寄信', start: '2026-10-28', end: '2026-10-30' });
+  const t = makeTask({ start: '2026-10-28', end: '2026-11-06', subtasks: [late] });
+  const s = { ...defaultState(), tasks: [t] };
+  assert.equal(subsForDay(t, TODAY, TODAY).length, 1, 'carried over to today');
+  assert.equal(subsForDay(t, '2026-11-03', TODAY).length, 0, 'only today carries it');
+  t.end = '2026-10-31';
+  assert.equal(tasksForDay(s, TODAY, TODAY).length, 1, 'its late task is on today too');
+  late.done = true;
+  assert.equal(subsForDay(t, TODAY, TODAY).length, 0);
+  late.done = false;
+  late.start = '2026-11-04';
+  late.end = '2026-11-05';
+  assert.equal(subsForDay(t, TODAY, TODAY).length, 0, 'moved out of the past, so it follows its new dates');
 });

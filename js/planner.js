@@ -3,10 +3,10 @@
 // rearranging today leaves the week and month plans exactly as they were.
 import {
   DAY_MINUTES, FREE_BLOCK_COLOR, SLOT, WEEKDAYS, addDays, assignLanes, blockSegments, blocksOn, fmtDuration, fmtMinute,
-  inkOn, isImportant, makeBlock, parseMinute, percent, plannedMinutes, setDone, snapMinute, tasksForDay,
-  toDay, todayStr, weekNumber, weekdayIdx,
+  fitParentToSubs, inkOn, isImportant, isSubOverdue, makeBlock, makeSub, makeTask, parseMinute, percent, plannedMinutes, setDone, snapMinute,
+  subsForDay, tasksForDay, toDay, todayStr, weekNumber, weekdayIdx,
 } from './core.js';
-import { blockInfo, commit, focusDate, getTask, state, touch } from './store.js';
+import { blockInfo, commit, focusDate, getProject, getTask, state, taskColor, touch } from './store.js';
 import { actions, changes, colorRowHTML, enters, esc, icon, inputs } from './ui.js';
 import { closeSheet, openPanel } from './sheet.js';
 import { headerHTML, planSegHTML, stripHTML } from './views.js';
@@ -24,6 +24,7 @@ const planner = {
   brush: null, // { taskId, subId, title } waiting to be placed
   scrollTop: null,
   renderedFor: null,
+  showHidden: false, // unfiled blocks the tray was told to hide
 };
 
 let requestRender = () => {};
@@ -58,12 +59,13 @@ function trayRow(t, iso, today, minutes) {
   const armed = planner.brush?.taskId === t.id && !planner.brush.subId;
   const important = isImportant(t, iso);
   const late = t.end < today;
-  const subs = t.subtasks.filter((s) => !s.done && s.start && s.end && s.start <= iso && iso <= s.end);
+  const subs = subsForDay(t, iso, today);
   const subRows = subs.map((s) => {
     const on = planner.brush?.subId === s.id;
+    const overdue = isSubOverdue(s, today);
     return `<div class="tray-row sub ${on ? 'armed' : ''}" data-tray data-id="${esc(t.id)}" data-sub="${esc(s.id)}" data-act="dp-arm" role="button" tabindex="0">
-      <i class="dot" style="background:${esc(color)}"></i><span class="tray-title">${esc(s.title) || '<em>未命名子任務</em>'}</span>
-      <small>${minutes(t.id, s.id) ? esc(fmtDuration(minutes(t.id, s.id))) : ''}</small>
+      <i class="dot" style="background:${esc(color)}"></i><span class="tray-title">${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}</span>
+      <small class="${overdue ? 'text-late' : ''}">${overdue ? '逾期' : minutes(t.id, s.id) ? esc(fmtDuration(minutes(t.id, s.id))) : ''}</small>
     </div>`;
   }).join('');
   const planned = minutes(t.id, '');
@@ -121,8 +123,24 @@ export function renderPlanner(main) {
     ? `<div class="dp-banner"><span>點一下或拖曳時段，放入「${esc(brushTitle)}」</span><button type="button" class="text-btn" data-act="dp-disarm">取消</button></div>`
     : '';
 
-  const trayBody = dayTasks.map((t) => trayRow(t, iso, today, minutes)).join('')
-    || '<p class="tray-empty">這天沒有排定的任務。可以從下方挑一個，或新增自由時段。</p>';
+  // Blocks filed under no task: listed under the tasks so nothing scheduled goes unseen.
+  const unfiled = blocks.filter((b) => !b.taskId || !getTask(b.taskId));
+  const hiddenCount = unfiled.filter((b) => b.trayHidden).length;
+  const unfiledRows = unfiled.filter((b) => !b.trayHidden || planner.showHidden).map((b) => {
+    const color = b.color || FREE_BLOCK_COLOR;
+    return `<div class="tray-row free ${b.trayHidden ? 'is-hidden' : ''}" data-act="dp-open" data-block="${esc(b.id)}" role="button" tabindex="0">
+      <i class="dot" style="background:${esc(color)}"></i>
+      <span class="tray-title">${esc(b.title) || '<em>未命名時段</em>'}</span>
+      <small>${fmtMinute(b.start)}–${fmtMinute(b.end)}</small>
+      <button type="button" class="tray-icon" data-act="dp-file" data-block="${esc(b.id)}" aria-label="加入專案" title="加入專案">${icon.folder}</button>
+      <button type="button" class="tray-icon" data-act="dp-hide" data-block="${esc(b.id)}" aria-label="${b.trayHidden ? '取消隱藏' : '從清單隱藏'}" title="${b.trayHidden ? '取消隱藏' : '從清單隱藏'}">${b.trayHidden ? icon.eye : icon.eyeOff}</button>
+    </div>`;
+  }).join('');
+  const unfiledSection = unfiled.length ? `<div class="tray-sep" role="separator"><span>未歸檔的時段</span>
+      ${hiddenCount ? `<button type="button" class="text-btn" data-act="dp-show-hidden">${planner.showHidden ? '收起隱藏的' : `顯示隱藏的 ${hiddenCount} 個`}</button>` : ''}</div>${unfiledRows}` : '';
+
+  const trayBody = (dayTasks.map((t) => trayRow(t, iso, today, minutes)).join('')
+    || '<p class="tray-empty">這天沒有排定的任務。可以從下方挑一個，或新增自由時段。</p>') + unfiledSection;
 
   const otherOptions = others.length
     ? `<select class="field-select tray-select" data-ch="dp-other" aria-label="排入其他任務">
@@ -200,7 +218,7 @@ function addBlock(start, end, brush) {
   return block;
 }
 
-function openBlock(id, { isNew = false } = {}) {
+export function openBlock(id, { isNew = false } = {}) {
   const b = state.blocks.find((x) => x.id === id);
   if (!b) return;
   const info = blockInfo(b);
@@ -249,8 +267,55 @@ const updateBlock = (id, fn) => {
 
 /* ---------- Actions ---------- */
 
+function fileBlockPanel(id) {
+  const b = state.blocks.find((x) => x.id === id);
+  if (!b) return;
+  const title = b.title || '未命名時段';
+  const tasksOf = (pid) => state.tasks.filter((t) => !t.archivedAt && percent(t) < 100 && t.projectId === pid);
+  const sections = state.projects.map((p) => {
+    const tasks = tasksOf(p.id).map((t) => `<button type="button" class="row form-row link-row file-task" data-act="dp-file-to" data-block="${esc(id)}" data-task="${esc(t.id)}">
+        <span class="file-sub">成為「${esc(t.title || '未命名任務')}」的子任務</span></button>`).join('');
+    return `<h3 class="group-head in-sheet"><i class="dot" style="background:${esc(p.color)}"></i>${esc(p.name)}</h3>
+      <div class="card">
+        <button type="button" class="row form-row link-row" data-act="dp-file-to" data-block="${esc(id)}" data-project="${esc(p.id)}">新增為這個專案的任務</button>
+        ${tasks}
+      </div>`;
+  }).join('');
+  openPanel(`把「${title}」加入專案`, `<p class="group-foot">時段會連到新的任務或子任務，日期是 ${esc(b.date)}。時間表上的位置不變。</p>${sections}`);
+}
+
 Object.assign(actions, {
   'dp-open': (el) => openBlock(el.dataset.block),
+  'dp-file': (el) => fileBlockPanel(el.dataset.block),
+  'dp-file-to': (el) => {
+    const b = state.blocks.find((x) => x.id === el.dataset.block);
+    if (!b) return;
+    const title = b.title || '未命名時段';
+    closeSheet();
+    if (el.dataset.task) {
+      const t = getTask(el.dataset.task);
+      if (!t) return;
+      commit(() => {
+        const sub = makeSub({ title, start: b.date, end: b.date });
+        t.subtasks.push(sub);
+        fitParentToSubs(t);
+        touch(t);
+        Object.assign(b, { taskId: t.id, subId: sub.id, color: '', trayHidden: false, updatedAt: Date.now() });
+      }, { undo: `已加入「${t.title || '未命名任務'}」的子任務` });
+      return;
+    }
+    const project = getProject(el.dataset.project);
+    commit((s) => {
+      const t = makeTask({ title, projectId: project?.id || '', start: b.date, end: b.date });
+      s.tasks.push(t);
+      Object.assign(b, { taskId: t.id, subId: '', color: '', trayHidden: false, updatedAt: Date.now() });
+    }, { undo: `已加入「${project?.name || '未分類'}」` });
+  },
+  'dp-hide': (el) => updateBlock(el.dataset.block, (b) => (b.trayHidden = !b.trayHidden)),
+  'dp-show-hidden': () => {
+    planner.showHidden = !planner.showHidden;
+    requestRender();
+  },
   'dp-shift': (el) => {
     focusDate.plan = addDays(planDate(), Number(el.dataset.n));
     requestRender();
