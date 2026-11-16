@@ -34,6 +34,35 @@
       var t = JSON.parse(localStorage.getItem('dg.prefs.v1') || '{}').theme;
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
     } catch (e) {}
+
+    // Boot guard: if the app has not started a few seconds in (a module failed to load or
+    // threw), show what went wrong and offer to drop the offline copy and load it fresh.
+    // Saved data lives in localStorage and is not touched.
+    (function () {
+      var errors = [];
+      addEventListener('error', function (e) {
+        var src = e.target && e.target.src;
+        errors.push(e.message || (src ? '無法載入 ' + src : '載入失敗'));
+      }, true);
+      addEventListener('unhandledrejection', function (e) { errors.push(String(e.reason)); });
+      setTimeout(function () {
+        if (window.dgBooted) return;
+        var box = document.createElement('div');
+        box.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#F6F1EA;color:#3B2F27';
+        box.innerHTML = '<b style="font-size:19px">頁面沒有載入成功</b>'
+          + '<span>通常是舊版的離線檔案還留在瀏覽器裡。按下面的按鈕會清掉離線檔案再重新載入，你的資料不會被刪除。</span>'
+          + '<button type="button" style="font:inherit;font-weight:600;padding:10px 20px;border:0;border-radius:12px;background:#8B6A4F;color:#fff">清除離線檔案並重新載入</button>'
+          + '<small style="max-width:640px;color:#8a7a6c;word-break:break-all"></small>';
+        box.querySelector('small').textContent = errors.slice(0, 3).join(' ／ ');
+        box.querySelector('button').onclick = function () {
+          var jobs = [];
+          if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+          if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k.indexOf('daily-gantt-') === 0; }).map(function (k) { return caches.delete(k); })); }));
+          Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+        };
+        document.body.appendChild(box);
+      }, 5000);
+    })();
   </script>
 </head>
 <body>

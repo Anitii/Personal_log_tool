@@ -211,6 +211,7 @@ function init() {
   });
 
   render();
+  window.dgBooted = true; // tells the boot guard in index.html the app started
 
   if ('serviceWorker' in navigator && location.hostname !== 'localhost') {
     let hadController = !!navigator.serviceWorker.controller;

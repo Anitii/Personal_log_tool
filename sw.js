@@ -1,6 +1,6 @@
 // Offline shell: every file is precached together, so a page never mixes two releases.
 // Change VERSION whenever any file below changes; that is what triggers the update.
-const VERSION = 'v4';
+const VERSION = 'v5';
 const CACHE = `daily-gantt-${VERSION}`;
 const FILES = [
   './',
@@ -29,9 +29,21 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  // cache: 'reload' skips the HTTP cache, or a release could precache the previous one's files.
-  const requests = FILES.map((f) => new Request(f, { cache: 'reload' }));
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(requests)).then(() => self.skipWaiting()));
+  // Each file is fetched under a URL unique to this release, so no HTTP cache (Safari's
+  // included) can hand back the previous release's copy and mix two releases in one cache.
+  // It is stored under its plain URL, which is what the page asks for.
+  e.waitUntil(
+    caches.open(CACHE)
+      .then((c) => Promise.all(FILES.map((f) => {
+        const url = new URL(f, self.location.href);
+        url.searchParams.set('v', VERSION);
+        return fetch(url, { cache: 'no-store' }).then((res) => {
+          if (!res.ok) throw new Error(`${f}: ${res.status}`);
+          return c.put(f, res);
+        });
+      })))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (e) => {
