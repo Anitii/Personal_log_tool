@@ -11,6 +11,7 @@ import { actions, enters, esc, icon } from './ui.js';
 import { headerHTML, planSegHTML, shell } from './views.js';
 import { openBlock } from './planner.js';
 import { gantt } from './gantt.js';
+import { gcalBarHTML, gcalDraggable, gcalEnsure, gcalEventsOn, gcalMove } from './gcal.js';
 
 const TAP_MIN = 30;
 const DROP_MIN = 60;
@@ -78,6 +79,22 @@ function blockHTML(b, lane, lanes, h, { preview = false } = {}) {
   </div>`;
 }
 
+function eventBlockHTML(e, iso, lane, lanes, h) {
+  const top = (e.start / 60) * h;
+  const height = Math.max(((e.end - e.start) / 60) * h, 12);
+  const drag = gcalDraggable(e);
+  const style = `top:${top}px;height:${height - 1}px;left:calc(${(lane / lanes) * 100}% + 2px);width:calc(${100 / lanes}% - 4px);--st:${esc(e.soft)};--ink:${e.ink};--gc:${esc(e.color)}`;
+  const span = `${fmtMinute(e.start)}–${fmtMinute(e.end)}`;
+  return `<div class="wk-block gev ${drag ? '' : 'locked'} ${height < 30 ? 'short' : ''}" style="${style}" data-gev="${esc(e.key)}" data-date="${esc(iso)}" data-act="gev-open" role="button" tabindex="0" aria-label="Google 日曆：${esc(e.title)}，${span}">
+    <b>${esc(e.title) || '（沒有標題）'}</b>${height >= 30 ? `<small>${span}</small>` : ''}
+    ${drag ? '<i class="wk-h" aria-hidden="true"></i>' : ''}
+  </div>`;
+}
+
+// All-day events head the day's list; timed ones live on the timeline.
+const allDayHTML = (e, iso) => `<li class="wk-task"><div class="wk-item gev-item" data-act="gev-open" data-gev="${esc(e.key)}" data-date="${esc(iso)}" role="button" tabindex="0">
+    <i class="gev-mark" style="background:${esc(e.color)}"></i><span class="wk-item-title">${esc(e.title) || '（沒有標題）'}</span></div></li>`;
+
 export function renderWeek(main) {
   const today = todayStr();
   const monday = currentMonday();
@@ -85,6 +102,7 @@ export function renderWeek(main) {
   const days = Array.from({ length: 7 }, (_, i) => fromDay(monday + i));
   const isThisWeek = days.includes(today);
   const now = nowMinute();
+  gcalEnsure(days[0], days[6]);
 
   const prev = main.querySelector('.wk-scroll');
   if (prev && week.renderedFor === monday) week.scroll = { top: prev.scrollTop, left: prev.scrollLeft };
@@ -102,13 +120,18 @@ export function renderWeek(main) {
     const [, m, d] = iso.split('-').map(Number);
     heads.push(`<button type="button" class="wk-dayhead ${iso === today ? 'is-today' : ''} ${i >= 5 ? 'weekend' : ''}" data-act="go-day" data-date="${iso}" aria-label="開啟 ${iso} 的時間表">
       <small>${DAY_NAMES[i]}</small><b>${m}.${String(d).padStart(2, '0')}</b><span>${planned ? esc(fmtDuration(planned)) : ''}</span></button>`);
-    const items = dayTasks(iso, today).map((t) => itemHTML(t, iso, today)).join('');
+    const events = gcalEventsOn(iso);
+    const timed = events.filter((e) => !e.allDay);
+    const items = events.filter((e) => e.allDay).map((e) => allDayHTML(e, iso)).join('') + dayTasks(iso, today).map((t) => itemHTML(t, iso, today)).join('');
     lists.push(`<ol class="wk-list ${i >= 5 ? 'weekend' : ''}" data-date="${iso}">${items}
       <li class="wk-add"><input type="text" class="bare" placeholder="＋" enterkeyhint="done" data-enter="wk-add" data-date="${iso}" data-keep="wk-add-${iso}" aria-label="在 ${m}/${d} 新增任務" maxlength="300"></li></ol>`);
-    const lanes = assignLanes(blocks);
+    const lanes = assignLanes([...blocks, ...timed.map((e) => ({ id: `g:${e.key}`, start: e.start, end: e.end }))]);
     const blockEls = blocks.map((b) => {
       const pos = lanes.get(b.id);
       return blockHTML(b, pos.lane, pos.lanes, h);
+    }).join('') + timed.map((e) => {
+      const pos = lanes.get(`g:${e.key}`);
+      return eventBlockHTML(e, iso, pos.lane, pos.lanes, h);
     }).join('');
     const nowLine = iso === today ? `<i class="wk-now" style="top:${(now / 60) * h}px"></i>` : '';
     cols.push(`<div class="wk-col ${iso === today ? 'is-today' : ''} ${i >= 5 ? 'weekend' : ''}" data-date="${iso}" data-act="wk-col">${blockEls}${nowLine}<div class="wk-preview"></div></div>`);
@@ -126,6 +149,7 @@ export function renderWeek(main) {
           <button type="button" class="btn-circle" data-act="wk-shift" data-n="1" aria-label="下一週">${icon.chevR}</button>
         </div>
         <span class="dp-stats">本週已排 ${esc(fmtDuration(weekPlanned))}</span>
+        ${gcalBarHTML()}
       </div>
     </div>`;
 
@@ -248,6 +272,7 @@ function begin() {
   document.body.classList.add('is-dragging');
   if (g.pointerType !== 'mouse') navigator.vibrate?.(8);
   if (g.blockId) document.querySelector(`.wk-block[data-block="${CSS.escape(g.blockId)}"]`)?.classList.add('ghost');
+  if (g.gev) document.querySelector(`.wk-block[data-gev="${CSS.escape(g.gev.key)}"]`)?.classList.add('ghost');
   g.tip = document.createElement('div');
   g.tip.className = 'drag-tip';
   document.body.append(g.tip);
@@ -296,6 +321,10 @@ function finish(apply) {
     requestRender();
     return;
   }
+  if (d.gev) {
+    gcalMove(d.gev, range.date, range.start, range.end);
+    return;
+  }
   if (d.blockId) {
     const b = state.blocks.find((x) => x.id === d.blockId);
     if (!b) return;
@@ -314,16 +343,33 @@ export function initWeekGestures() {
   document.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || g || !e.target.closest?.('.wk-view')) return;
     const blockEl = e.target.closest('.wk-block[data-block]');
+    const gevEl = e.target.closest('.wk-block[data-gev]');
     const item = e.target.closest('[data-wk-drag]');
     const col = e.target.closest('.wk-col');
     if (e.target.closest('.check, input')) return;
     if (!blockEl && !item && !col) return;
+    const ev = gevEl ? gcalEventsOn(gevEl.dataset.date).find((x) => x.key === gevEl.dataset.gev) : null;
+    if (gevEl && !gcalDraggable(ev)) {
+      // Read-only events only open on tap. A drag off one must not land as a tap on the column.
+      const sx = e.clientX;
+      const sy = e.clientY;
+      document.addEventListener('pointerup', (u) => {
+        if (Math.hypot(u.clientX - sx, u.clientY - sy) > MOUSE_SLOP) suppressUntil = performance.now() + 350;
+      }, { once: true });
+      return;
+    }
     const scroller = document.querySelector('.wk-scroll');
     const base = {
       scroller, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
       pointerId: e.pointerId, pointerType: e.pointerType, active: false, timer: 0, lastKey: null,
     };
-    if (blockEl) {
+    if (ev) {
+      const at = pointAt(e.clientX, e.clientY);
+      g = {
+        ...base, mode: e.target.closest('.wk-h') ? 'resize' : 'move', gev: ev, block: { title: ev.title, color: ev.soft },
+        date: gevEl.dataset.date, start: ev.start, duration: ev.end - ev.start, grab: (at?.minute ?? ev.start) - ev.start,
+      };
+    } else if (blockEl) {
       const block = state.blocks.find((b) => b.id === blockEl.dataset.block);
       if (!block) return;
       const at = pointAt(e.clientX, e.clientY);

@@ -10,6 +10,7 @@ import { calendarToday, renderCalendar, setCalendarRender } from './calendar.js'
 import { renderDiary, setDiaryRender } from './diary.js';
 import { initWeekGestures, renderWeek, setWeekRender, weekSuppressClick, weekToday } from './week.js';
 import { initPinch } from './pinch.js';
+import { setGcalRender } from './gcal.js';
 
 const main = document.getElementById('main');
 const sidebar = document.getElementById('sidebar');
@@ -168,6 +169,7 @@ function init() {
   setPlannerRender(schedule);
   setCalendarRender(schedule);
   setWeekRender(schedule);
+  setGcalRender(schedule);
   setDiaryRender(schedule);
   subscribe(schedule);
   onSyncStatus(() => {

@@ -1045,6 +1045,36 @@ input.bare:focus-visible, textarea:focus-visible { outline: none; }
   .wk-tasks { max-height: 28vh; }
 }
 
+/* ---------- Google Calendar events ---------- */
+
+/* Softened fill, the calendar's own color as a solid edge: reads as "not one of my blocks". */
+.dp-seg.gev { cursor: grab; }
+.dp-seg.gev.first { box-shadow: inset 3px 0 0 var(--gc), inset 0 0 0 .5px color-mix(in srgb, var(--gc) 35%, transparent); }
+.dp-seg.gev.locked, .wk-block.gev.locked { cursor: pointer; }
+.wk-block.gev { box-shadow: inset 3px 0 0 var(--gc), inset 0 0 0 .5px color-mix(in srgb, var(--gc) 35%, transparent); padding-left: 8px; }
+.cal-bar.gev { box-shadow: inset 3px 0 0 var(--gc); }
+.cal-bar.gev small { font-weight: 500; opacity: .8; font-variant-numeric: tabular-nums; }
+.gev-mark { width: 4px; height: 16px; border-radius: 2px; flex: none; }
+.wk-item.gev-item { cursor: pointer; padding-left: 2px; }
+.wk-item.gev-item .wk-item-title { font-weight: 600; }
+.gev-title-row { gap: 10px; }
+.gev-title-row .bare { font-size: 17px; font-weight: 600; }
+.gev-row .row-title { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gcal-chip { white-space: nowrap; font-size: 13px; }
+.gcal-chip.warn { background: color-mix(in srgb, var(--now) 14%, var(--card)); color: var(--now); box-shadow: none; font-weight: 600; }
+.gcal-chip.quiet { color: var(--label3); padding: 0 4px; }
+.gcal-steps { padding: 12px 16px 6px; font-size: 14px; line-height: 1.5; color: var(--label2); }
+.gcal-steps p { display: flex; gap: 10px; margin: 0 0 8px; }
+.gcal-steps b {
+  flex: none; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; background: var(--fill); color: var(--tint);
+}
+.gcal-steps a { color: var(--tint); }
+.gcal-err { white-space: normal; text-align: left; font-size: 13.5px; line-height: 1.45; }
+.code-box { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto; }
+.gcal-cal-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+input:disabled.bare, textarea:disabled { color: var(--label2); -webkit-text-fill-color: var(--label2); opacity: 1; }
+
 /* ---------- Toast ---------- */
 
 .toast {

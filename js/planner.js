@@ -7,10 +7,11 @@ import {
   subsForDay, tasksForDay, toDay, todayStr, weekNumber, weekdayIdx,
 } from './core.js';
 import { blockInfo, commit, focusDate, getProject, getTask, state, taskColor, touch } from './store.js';
-import { actions, changes, colorRowHTML, enters, esc, icon, inputs } from './ui.js';
+import { actions, changes, colorRowHTML, enters, esc, icon, inputs, toast } from './ui.js';
 import { closeSheet, openPanel } from './sheet.js';
 import { headerHTML, planSegHTML, stripHTML } from './views.js';
 import { gantt } from './gantt.js';
+import { gcalBarHTML, gcalConnected, gcalCreate, gcalDraggable, gcalEnsure, gcalEventsOn, gcalMove } from './gcal.js';
 
 const NARROW = 768;
 const DEFAULT_TAP_MIN = 30;
@@ -54,6 +55,32 @@ function segmentsHTML(b, lane, lanes, { preview = false } = {}) {
   }).join('');
 }
 
+// A Google Calendar event on the 10-minute table: same geometry as a block, its own look.
+function eventSegmentsHTML(e, iso, lane, lanes) {
+  const span = `${fmtMinute(e.start)}–${fmtMinute(e.end)}`;
+  const drag = gcalDraggable(e);
+  return blockSegments(e.start, e.end).map((seg) => {
+    const pos = `left:${(seg.from / 60) * 100}%;width:${((seg.to - seg.from) / 60) * 100}%;top:calc(var(--rh) * ${seg.row + lane / lanes});height:calc(var(--rh) / ${lanes});--st:${esc(e.soft)};--ink:${e.ink};--gc:${esc(e.color)}`;
+    const attrs = `data-gev="${esc(e.key)}" data-date="${esc(iso)}" data-act="gev-open" ${seg.first ? `role="button" tabindex="0" aria-label="Google 日曆：${esc(e.title)}，${span}"` : 'aria-hidden="true"'}`;
+    return `<div class="dp-seg gev ${seg.first ? 'first' : ''} ${seg.last ? 'last' : ''} ${drag ? '' : 'locked'}" style="${pos}" ${attrs}>
+      ${seg.first ? `<span class="dp-seg-text">${esc(e.title) || '（沒有標題）'}</span>` : ''}
+      ${seg.last && drag ? '<i class="dp-h" aria-hidden="true"></i>' : ''}
+    </div>`;
+  }).join('');
+}
+
+// The day's Google Calendar events, listed under the tasks like the unfiled blocks.
+function eventTrayHTML(events, iso) {
+  if (!gcalConnected()) return '';
+  const rows = events.map((e) => `<div class="tray-row free gev-row" data-act="gev-open" data-gev="${esc(e.key)}" data-date="${esc(iso)}" role="button" tabindex="0">
+      <i class="dot" style="background:${esc(e.color)}"></i>
+      <span class="tray-title">${esc(e.title) || '<em>（沒有標題）</em>'}</span>
+      <small>${e.allDay ? '整天' : `${fmtMinute(e.start)}–${fmtMinute(e.end)}`}</small>
+    </div>`).join('');
+  return `<div class="tray-sep" role="separator"><span>Google 日曆</span>
+      <button type="button" class="text-btn" data-act="gev-new" data-date="${esc(iso)}">新增行程</button></div>${rows}`;
+}
+
 function trayRow(t, iso, today, minutes) {
   const color = t.color || (state.projects.find((p) => p.id === t.projectId)?.color) || FREE_BLOCK_COLOR;
   const armed = planner.brush?.taskId === t.id && !planner.brush.subId;
@@ -83,7 +110,10 @@ export function renderPlanner(main) {
   const iso = planDate();
   const day = toDay(iso);
   const blocks = blocksOn(state, iso);
-  const lanes = assignLanes(blocks);
+  gcalEnsure(iso, iso);
+  const events = gcalEventsOn(iso);
+  const timed = events.filter((e) => !e.allDay);
+  const lanes = assignLanes([...blocks, ...timed.map((e) => ({ id: `g:${e.key}`, start: e.start, end: e.end }))]);
   const isToday = iso === today;
   const [, m, d] = iso.split('-').map(Number);
 
@@ -111,6 +141,9 @@ export function renderPlanner(main) {
   const segs = blocks.map((b) => {
     const pos = lanes.get(b.id);
     return segmentsHTML(b, pos.lane, pos.lanes);
+  }).join('') + timed.map((e) => {
+    const pos = lanes.get(`g:${e.key}`);
+    return eventSegmentsHTML(e, iso, pos.lane, pos.lanes);
   }).join('');
 
   const now = isToday ? nowMinute() : -1;
@@ -140,7 +173,7 @@ export function renderPlanner(main) {
       ${hiddenCount ? `<button type="button" class="text-btn" data-act="dp-show-hidden">${planner.showHidden ? '收起隱藏的' : `顯示隱藏的 ${hiddenCount} 個`}</button>` : ''}</div>${unfiledRows}` : '';
 
   const trayBody = (dayTasks.map((t) => trayRow(t, iso, today, minutes)).join('')
-    || '<p class="tray-empty">這天沒有排定的任務。可以從下方挑一個，或新增自由時段。</p>') + unfiledSection;
+    || '<p class="tray-empty">這天沒有排定的任務。可以從下方挑一個，或新增自由時段。</p>') + unfiledSection + eventTrayHTML(events, iso);
 
   const otherOptions = others.length
     ? `<select class="field-select tray-select" data-ch="dp-other" aria-label="排入其他任務">
@@ -159,6 +192,7 @@ export function renderPlanner(main) {
           <button type="button" class="btn-circle" data-act="dp-shift" data-n="1" aria-label="後一天">${icon.chevR}</button>
         </div>
         <span class="dp-stats">已排 ${esc(fmtDuration(planned))}${unplaced ? `｜${unplaced} 件未排` : ''}</span>
+        ${gcalBarHTML()}
       </div>
     </div>`;
 
@@ -242,6 +276,7 @@ export function openBlock(id, { isNew = false } = {}) {
     <div class="card"><div class="row form-row notes-row"><textarea class="notes-input" rows="2" placeholder="這段時間要做什麼" data-in="bs-notes" data-id="${esc(id)}" aria-label="備註">${esc(b.notes)}</textarea></div></div>
     <div class="card bs-actions">
       ${linked && !taskDone ? `<button type="button" class="row form-row link-row" data-act="bs-finish-task" data-id="${esc(id)}">把整個任務標為完成</button>` : ''}
+      ${gcalConnected() ? `<button type="button" class="row form-row link-row" data-act="bs-to-gcal" data-id="${esc(id)}">移到 Google 日曆</button>` : ''}
       <button type="button" class="row form-row link-row destructive" data-act="bs-delete" data-id="${esc(id)}">刪除這個時段</button>
     </div>`, {
     onClose: () => {
@@ -356,6 +391,19 @@ Object.assign(actions, {
       s.deleted[id] = Date.now();
     }, { undo: '已刪除時段' });
   },
+  // The block becomes a Google Calendar event at the same time; the local block goes away.
+  'bs-to-gcal': async (el) => {
+    const b = state.blocks.find((x) => x.id === el.dataset.id);
+    if (!b) return;
+    closeSheet();
+    const e = await gcalCreate({ title: blockInfo(b).title, iso: b.date, start: b.start, end: b.end, notes: b.notes });
+    if (!e) return;
+    commit((s) => {
+      s.blocks = s.blocks.filter((x) => x.id !== b.id);
+      s.deleted[b.id] = Date.now();
+    });
+    toast('已移到 Google 日曆'); // no undo: the event already exists on Google's side
+  },
   'bs-finish-task': (el) => {
     const b = state.blocks.find((x) => x.id === el.dataset.id);
     const t = b && getTask(b.taskId);
@@ -457,6 +505,7 @@ function begin() {
   if (g.blockId) {
     document.querySelectorAll(`[data-block="${CSS.escape(g.blockId)}"]`).forEach((el) => el.classList.add('ghost'));
   }
+  if (g.gev) document.querySelectorAll(`.dp-seg[data-gev="${CSS.escape(g.gev.key)}"]`).forEach((el) => el.classList.add('ghost'));
   g.tip = document.createElement('div');
   g.tip.className = 'drag-tip';
   document.body.append(g.tip);
@@ -501,6 +550,10 @@ function finish(apply) {
     return;
   }
   const range = rangeFor(d);
+  if (d.gev) {
+    gcalMove(d.gev, planDate(), range.start, range.end);
+    return;
+  }
   if (d.blockId) {
     updateBlock(d.blockId, (b) => {
       b.start = range.start;
@@ -523,16 +576,32 @@ export function initPlannerGestures() {
   document.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || g || !e.target.closest?.('.day-view')) return;
     const seg = e.target.closest('.dp-seg[data-block]');
+    const gseg = e.target.closest('.dp-seg[data-gev]');
     const tray = e.target.closest('[data-tray]');
     const grid = e.target.closest('.dp-grid');
     if (!seg && !grid && (!tray || e.target.closest('button'))) return;
+    const ev = gseg ? gcalEventsOn(planDate()).find((x) => x.key === gseg.dataset.gev) : null;
+    if (gseg && !gcalDraggable(ev)) {
+      // Read-only events only open on tap. A drag off one must not land as a tap on the grid.
+      const sx = e.clientX;
+      const sy = e.clientY;
+      document.addEventListener('pointerup', (u) => {
+        if (Math.hypot(u.clientX - sx, u.clientY - sy) > MOUSE_SLOP) suppressUntil = performance.now() + 350;
+      }, { once: true });
+      return;
+    }
 
     const scroller = document.querySelector('.dp-scroll');
     const base = {
       scroller, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
       pointerId: e.pointerId, pointerType: e.pointerType, active: false, timer: 0, lastKey: null,
     };
-    if (seg) {
+    if (ev) {
+      g = {
+        ...base, mode: e.target.closest('.dp-h') ? 'resize' : 'move', gev: ev, block: { title: ev.title, color: ev.soft },
+        start: ev.start, duration: ev.end - ev.start, grab: minuteAt(e.clientX, e.clientY) - ev.start,
+      };
+    } else if (seg) {
       const block = state.blocks.find((b) => b.id === seg.dataset.block);
       if (!block) return;
       const resize = !!e.target.closest('.dp-h');

@@ -8,6 +8,7 @@ import { addTask, commit, focusDate, getTask, prefs, setPref, state, taskColor, 
 import { actions, esc, icon } from './ui.js';
 import { closeSheet, openPanel, openTask } from './sheet.js';
 import { chipsHTML, headerHTML, planSegHTML } from './views.js';
+import { gcalBarHTML, gcalConnected, gcalEnsure, gcalEventsBetween, gcalEventsOn } from './gcal.js';
 
 const LANE_H = 21;
 const DAY_HEAD_H = 28;
@@ -70,7 +71,28 @@ function barRuns(bar, monday) {
   return runs;
 }
 
+const clock = (ms) => {
+  const d = new Date(ms);
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+// Google Calendar events stand in as task-shaped items so they share the week's lanes.
+const eventItems = (monday) => gcalEventsBetween(fromDay(monday), fromDay(monday + 6)).map((e) => ({
+  id: `g:${e.key}`, title: e.title, start: e.from, end: e.to, priority: 0, focusDays: [], order: e.allDay ? 0 : e.startMs, gev: e,
+}));
+
+function eventBarHTML(bar, monday) {
+  const e = bar.task.gev;
+  const realStart = toDay(e.from) === monday + bar.from;
+  const realEnd = toDay(e.to) === monday + bar.to;
+  const cls = ['cal-bar strong gev', realStart ? 'round-l' : '', realEnd ? 'round-r' : ''].join(' ');
+  const style = `left:calc(${(bar.from / 7) * 100}% + 2px);width:calc(${((bar.to - bar.from + 1) / 7) * 100}% - 4px);top:${bar.lane * LANE_H}px;--st:${esc(e.soft)};--ink:${e.ink};--gc:${esc(e.color)}`;
+  const time = !e.allDay && realStart ? `<small>${clock(e.startMs)}</small> ` : '';
+  return `<div class="${cls}" style="${style}"><span>${time}${esc(e.title) || '（沒有標題）'}</span></div>`;
+}
+
 function barHTML(bar, monday) {
+  if (bar.task.gev) return eventBarHTML(bar, monday);
   const t = bar.task;
   const color = taskColor(t) || FREE_BLOCK_COLOR;
   const done = percent(t) >= 100;
@@ -102,6 +124,7 @@ export function renderCalendar(main) {
   const weeks = zoomed ? Array.from({ length: span() }, (_, i) => weekStart() + 7 * i) : monthWeeks(ym);
   const title = zoomed ? `${fmtMD(fromDay(weeks[0]))}–${fmtMD(fromDay(weeks[weeks.length - 1] + 6))}` : `${y} 年 ${m} 月`;
   const tasks = visibleTasks(today, { archived: true }); // the calendar is also the record of what happened
+  gcalEnsure(fromDay(weeks[0]), fromDay(weeks[weeks.length - 1] + 6));
 
   const avail = (main.clientHeight || innerHeight) - (innerWidth < 768 ? 200 : 150);
   const rowH = Math.max(MIN_ROW_H, avail / weeks.length);
@@ -109,7 +132,7 @@ export function renderCalendar(main) {
 
   let markedThisMonth = false;
   const weekRows = weeks.map((monday) => {
-    const bars = layoutWeek(tasks, monday);
+    const bars = layoutWeek([...tasks, ...eventItems(monday)], monday);
     const visible = bars.filter((b) => b.lane < lanes);
     const cells = [];
     for (let i = 0; i < 7; i++) {
@@ -146,6 +169,7 @@ export function renderCalendar(main) {
         <div class="seg span-seg" role="group" aria-label="範圍">${SPANS.map((k) => `<button type="button" class="${span() === k ? 'on' : ''}" data-act="cal-span" data-v="${k}" aria-pressed="${span() === k}">${SPAN_LABEL[k]}</button>`).join('')}</div>
         ${chipsHTML()}
         <button type="button" class="chip tb-toggle ${prefs.calDim ? 'on' : ''}" data-act="cal-dim" aria-pressed="${prefs.calDim}">淡化不重要</button>
+        ${gcalBarHTML()}
       </div>
     </div>
     <div class="cal-scroll">
@@ -174,9 +198,17 @@ function dayPanel(iso) {
     </div>`;
   }).join('');
   const [, m, d] = iso.split('-').map(Number);
+  const fmt = (n) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
+  const events = gcalConnected() ? `<h3 class="group-head in-sheet">Google 日曆</h3>
+    <div class="card">${gcalEventsOn(iso).map((e) => `<button type="button" class="row form-row link-row gev-row" data-act="gev-open" data-gev="${esc(e.key)}" data-date="${iso}">
+        <span class="row-title"><i class="dot" style="background:${esc(e.color)}"></i> ${esc(e.title) || '（沒有標題）'}</span>
+        <span class="form-value">${e.allDay ? '整天' : `${fmt(e.start)}–${fmt(e.end)}`}</span></button>`).join('')}
+      <button type="button" class="row form-row link-row" data-act="gev-new" data-date="${iso}">新增 Google 行程</button>
+    </div>` : '';
   openPanel(`${m} 月 ${d} 日 星期${WEEKDAYS[weekdayIdx(day)]}`, `
     <div class="card">${rows || '<p class="tray-empty">這天沒有任務。</p>'}</div>
     <p class="group-foot">星號只影響這一天。要讓任務每天都算最重要，把優先度設為「高」。</p>
+    ${events}
     <div class="card panel-actions">
       <button type="button" class="row form-row link-row" data-act="cal-open-day" data-date="${iso}">開啟這天的時間表</button>
       <button type="button" class="row form-row link-row" data-act="cal-open-diary" data-date="${iso}">寫這天的日記</button>

@@ -1,6 +1,6 @@
 // Offline shell: every file is precached together, so a page never mixes two releases.
 // Change VERSION whenever any file below changes; that is what triggers the update.
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = `daily-gantt-${VERSION}`;
 const FILES = [
   './',
@@ -20,6 +20,7 @@ const FILES = [
   'js/diary.js',
   'js/pinch.js',
   'js/week.js',
+  'js/gcal.js',
   'js/main.js',
   'js/xlsx.js',
   'icons/icon.svg',

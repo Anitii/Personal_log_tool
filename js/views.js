@@ -13,6 +13,7 @@ import {
 import { connect, disconnect, syncNow, syncStatus } from './sync.js';
 import { actions, changes, colorRowHTML, download, enters, esc, icon, inputs, toast } from './ui.js';
 import { openTask } from './sheet.js';
+import { gcal, gcalCalendars, gcalConnected, gcalTarget } from './gcal.js';
 
 export const shell = {
   refocus: null, // data-keep key to put the caret back in after the next render
@@ -399,6 +400,35 @@ function syncLine() {
   return '已連結';
 }
 
+function gcalSettingsHTML() {
+  const err = gcal.error ? `<div class="row form-row"><span class="form-value text-late gcal-err">${esc(gcal.error)}</span></div>` : '';
+  if (!gcalConnected()) {
+    return `<div class="gcal-steps">
+        <p><b>1</b><span>複製程式碼，到 <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com 新增專案</a>，貼上取代原本的內容並儲存。</span></p>
+        <p><b>2</b><span>左側「服務」按 ＋，加入「Google Calendar API」。</span></p>
+        <p><b>3</b><span>右上「部署 → 新增部署」，類型選「網頁應用程式」，執行身分「我」，存取權「所有人」，按部署並允許權限。</span></p>
+        <p><b>4</b><span>把部署後的網址貼在下面，按「連結」。</span></p>
+      </div>
+      <button type="button" class="row form-row link-row" data-act="gcal-copy-script">複製 Apps Script 程式碼</button>
+      <button type="button" class="row form-row link-row" data-act="gcal-show-script">查看程式碼</button>
+      <div class="row form-row"><input type="url" id="gcal-url" class="bare" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" data-enter="gcal-link" data-keep="gcal-url" aria-label="Apps Script 網址或連結碼"></div>
+      ${err}
+      <button type="button" class="row form-row link-row" data-act="gcal-link" ${gcal.busy ? 'disabled' : ''}>${gcal.busy ? '連結中…' : '連結'}</button>`;
+  }
+  const cals = gcalCalendars();
+  const writable = cals.filter((c) => c.access === 'owner' || c.access === 'writer');
+  const list = cals.map((c) => `<label class="row form-row"><i class="dot" style="background:${esc(c.color)}"></i><span class="form-label gcal-cal-name">${esc(c.name)}</span>
+      <input type="checkbox" class="switch" data-ch="gcal-cal-on" data-cal="${esc(c.id)}" ${c.on ? 'checked' : ''} aria-label="顯示 ${esc(c.name)}"></label>`).join('');
+  const target = writable.length ? `<label class="row form-row"><span class="form-label">新行程加到</span><select class="field-select" data-ch="gcal-target" aria-label="新行程加到哪個日曆">
+      ${writable.map((c) => `<option value="${esc(c.id)}" ${c.id === gcalTarget() ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : '';
+  return `<div class="row form-row"><span class="form-label">狀態</span><span class="form-value">${gcal.busy ? '更新中…' : '已連結'}</span></div>${err}</div>
+    ${cals.length ? `<h3 class="group-head in-sheet">要顯示的日曆</h3><div class="card">${list}</div>` : ''}
+    <div class="card">${target}
+      <button type="button" class="row form-row link-row" data-act="gcal-refresh">重新抓取行程</button>
+      <button type="button" class="row form-row link-row" data-act="gcal-copy-link">複製其他裝置用的連結碼</button>
+      <button type="button" class="row form-row link-row destructive" data-act="gcal-disconnect">中斷連結</button>`;
+}
+
 export function renderSettings() {
   const s = state.settings;
   const connected = syncStatus.state !== 'off';
@@ -454,6 +484,11 @@ export function renderSettings() {
       <p class="group-foot">資料預設只存在這個瀏覽器。要讓手機、平板、電腦看到同一份，請到
       <a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=daily-gantt" target="_blank" rel="noopener">GitHub 建立權杖</a>（只勾 gist），
       在每台裝置貼上一次。資料會存進你帳號裡的秘密 Gist；權杖只存在這個瀏覽器，請勿在共用電腦上使用。</p>
+    </section>
+
+    <section class="group"><h2 class="group-head">Google 日曆</h2><div class="card">${gcalSettingsHTML()}</div>
+      <p class="group-foot">行程會出現在日、週時間表和月曆上，點一下可以修改，拖曳可以改時間。透過你自己帳號裡的 Apps Script 連線，完全免費，不需要每小時重新登入。
+      程式碼裡有一組只有這個工具知道的密碼，請不要分享。要在其他裝置使用，在已連結的裝置按「複製其他裝置用的連結碼」，貼到另一台裝置的同一個欄位。</p>
     </section>
 
     <section class="group"><h2 class="group-head">資料</h2><div class="card">
