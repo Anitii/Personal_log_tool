@@ -1,45 +1,59 @@
-// Month calendar. Each day can mark its most important tasks; the rest fade by default.
+// Month calendar: one continuous column of weeks that scrolls straight across month
+// boundaries. A task with dated subtasks is drawn as those subtasks, the task acting as their
+// category (its color, its importance); a task without them is drawn as itself.
 import {
-  FREE_BLOCK_COLOR, WEEKDAYS, addMonths, fmtMD, fmtRange, fromDay, inkOn, isActiveOn, isImportant, layoutWeek, mondayOf, monthWeeks, percent,
-  toDay, todayStr, toggleFocusDay, weekNumber, weekdayIdx,
+  FREE_BLOCK_COLOR, WEEKDAYS, fmtMD, fmtRange, fromDay, inkOn, isActiveOn, isDone, isImportant, layoutWeek, mondayOf, occursOn,
+  subDoneOn, subFraction, subsForDay, toDay, todayStr, toggleFocusDay, toggleSubOn, weekNumber, weekdayIdx,
 } from './core.js';
 import { onPinch } from './pinch.js';
 import { addTask, commit, focusDate, getTask, prefs, setPref, state, taskColor, touch, visibleTasks } from './store.js';
 import { actions, esc, icon } from './ui.js';
 import { closeSheet, openPanel, openTask } from './sheet.js';
-import { chipsHTML, headerHTML, planSegHTML } from './views.js';
+import { chipsHTML, headerHTML, offerFinish, planSegHTML } from './views.js';
 import { gcalBarHTML, gcalConnected, gcalEnsure, gcalEventsBetween, gcalEventsOn } from './gcal.js';
 
 const LANE_H = 21;
 const DAY_HEAD_H = 28;
 const MORE_H = 15;
 const MIN_ROW_H = 92;
+const SPREAD = 26; // weeks rendered on each side of the anchor
+const EDGE = 4; // weeks from either end that trigger rendering more
 
-// The span zooms with a pinch: the whole month, or a closer look at three or two weeks.
+// The span zooms with a pinch: how many weeks fill the screen (a month is about five).
 const SPANS = ['month', 3, 2];
 const SPAN_LABEL = { month: '月', 3: '3 週', 2: '2 週' };
-const calendar = { month: null, start: null };
+const ROWS = { month: 5, 3: 3, 2: 2 };
+
+// top: the Monday of the week at the top of the screen; offset: pixels scrolled into it.
+// target: where a smooth scroll is heading, so repeated taps on ‹ › add up.
+const calendar = { top: null, offset: 0, from: 0, weeks: 0, rowH: 0, target: null };
 let requestRender = () => {};
 export const setCalendarRender = (fn) => (requestRender = fn);
 
-const currentMonth = () => (calendar.month ||= todayStr().slice(0, 7));
 const span = () => (SPANS.includes(prefs.calSpan) ? prefs.calSpan : 'month');
+// The month being looked at: the one under the middle of the screen (in a month view, the
+// first row usually still belongs to the month before).
+const monthLabel = (top) => {
+  const [y, m] = fromDay(top + Math.floor(ROWS[span()] / 2) * 7 + 3).split('-').map(Number);
+  return `${y} 年 ${m} 月`;
+};
 
-// The first Monday shown when zoomed in: this week if it falls in the month on screen.
-function weekStart() {
-  if (calendar.start == null) {
-    const today = todayStr();
-    const ym = currentMonth();
-    calendar.start = mondayOf(toDay(today.slice(0, 7) === ym ? today : `${ym}-01`));
-  }
-  return calendar.start;
-}
+// The week holding the 1st of the month `day` falls in (a month view starts there).
+const monthStartWeek = (day) => mondayOf(toDay(`${fromDay(day).slice(0, 7)}-01`));
 
+// Zooming keeps the place: into weeks it starts at this week if it was on screen; out to a
+// month it starts at the month being looked at.
 function setSpan(next) {
-  if (next === span()) return;
-  if (next === 'month') {
-    calendar.month = fromDay(weekStart() + 3).slice(0, 7); // the month most of the first week falls in
-  } else if (span() === 'month') calendar.start = null;
+  const prev = span();
+  if (next === prev) return;
+  if (calendar.top != null) {
+    const top = calendar.top;
+    const thisWeek = mondayOf(toDay(todayStr()));
+    if (next === 'month') calendar.top = monthStartWeek(top + Math.floor(ROWS[prev] / 2) * 7 + 3);
+    else if (thisWeek >= top && thisWeek < top + ROWS[prev] * 7) calendar.top = thisWeek;
+    calendar.offset = 0;
+    calendar.target = null;
+  }
   setPref({ calSpan: next });
 }
 
@@ -59,6 +73,36 @@ onPinch('.cal-view .cal-scroll', (f) => {
   setSpan(next);
 });
 
+/* ---------- What the calendar draws ---------- */
+
+const dated = (from, to) => !!from && !!to && to >= from;
+
+// One item per bar. Subtasks with their own dates stand for their task; repeating ones span
+// their range. `cat` is the task they belong to: it gives color and importance.
+function calItems(tasks) {
+  const out = [];
+  for (const t of tasks) {
+    const color = taskColor(t) || FREE_BLOCK_COLOR;
+    const common = { cat: t, color, priority: t.priority, focusDays: t.focusDays, archived: !!t.archivedAt };
+    const subs = t.subtasks.filter((s) => (s.repeat ? dated(s.start || t.start, s.end || t.end) : dated(s.start, s.end)));
+    if (subs.length) {
+      subs.forEach((s, i) => out.push({
+        ...common,
+        id: `${t.id}:${s.id}`,
+        sub: s,
+        title: s.title || '未命名子任務',
+        start: s.start || t.start,
+        end: s.end || t.end,
+        order: t.order + (i + 1) / 1000,
+        done: isDone(t) || (s.repeat ? subFraction(s, t) >= 1 : s.done),
+      }));
+    } else if (dated(t.start, t.end)) {
+      out.push({ ...common, id: t.id, title: t.title || '未命名', start: t.start, end: t.end, order: t.order, done: isDone(t) });
+    }
+  }
+  return out;
+}
+
 // One bar becomes several runs when its importance changes partway through the week.
 function barRuns(bar, monday) {
   const runs = [];
@@ -76,7 +120,7 @@ const clock = (ms) => {
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-// Google Calendar events stand in as task-shaped items so they share the week's lanes.
+// Google Calendar events stand in as items so they share the week's lanes.
 const eventItems = (monday) => gcalEventsBetween(fromDay(monday), fromDay(monday + 6)).map((e) => ({
   id: `g:${e.key}`, title: e.title, start: e.from, end: e.to, priority: 0, focusDays: [], order: e.allDay ? 0 : e.startMs, gev: e,
 }));
@@ -92,78 +136,88 @@ function eventBarHTML(bar, monday) {
 }
 
 function barHTML(bar, monday) {
-  if (bar.task.gev) return eventBarHTML(bar, monday);
-  const t = bar.task;
-  const color = taskColor(t) || FREE_BLOCK_COLOR;
-  const done = percent(t) >= 100;
-  const realStart = toDay(t.start) === monday + bar.from;
-  const realEnd = toDay(t.end) === monday + bar.to;
+  const it = bar.task;
+  if (it.gev) return eventBarHTML(bar, monday);
+  const realStart = toDay(it.start) === monday + bar.from;
+  const realEnd = toDay(it.end) === monday + bar.to;
   const runs = barRuns(bar, monday);
   return runs.map((run, i) => {
-    const dim = (prefs.calDim && !run.important) || done || !!t.archivedAt;
+    const dim = (prefs.calDim && !run.important) || it.done || it.archived;
     const cls = [
       'cal-bar',
       dim ? 'dim' : 'strong',
-      done ? 'is-done' : '',
+      it.done ? 'is-done' : '',
+      it.sub ? 'is-sub' : '',
+      it.sub?.repeat ? 'is-repeat' : '',
       i === 0 && realStart ? 'round-l' : '',
       i === runs.length - 1 && realEnd ? 'round-r' : '',
     ].join(' ');
     const label = i === 0 || run.important;
     const gapL = i === 0 ? 2 : 0; // runs of one bar touch, so only its outer ends get a gap
     const gapR = i === runs.length - 1 ? 2 : 0;
-    const style = `left:calc(${(run.from / 7) * 100}% + ${gapL}px);width:calc(${((run.to - run.from + 1) / 7) * 100}% - ${gapL + gapR}px);top:${bar.lane * LANE_H}px;--st:${esc(color)};--ink:${inkOn(color)}`;
-    return `<div class="${cls}" style="${style}">${label ? `<span>${run.important ? '★ ' : ''}${esc(t.title) || '未命名'}</span>` : ''}</div>`;
+    const style = `left:calc(${(run.from / 7) * 100}% + ${gapL}px);width:calc(${((run.to - run.from + 1) / 7) * 100}% - ${gapL + gapR}px);top:${bar.lane * LANE_H}px;--st:${esc(it.color)};--ink:${inkOn(it.color)}`;
+    const text = `${run.important ? '★ ' : ''}${it.sub?.repeat ? '↻ ' : ''}${esc(it.title)}`;
+    return `<div class="${cls}" style="${style}">${label ? `<span>${text}</span>` : ''}</div>`;
   }).join('');
+}
+
+/* ---------- Rendering ---------- */
+
+function weekHTML(monday, items, today, lanes, rowH) {
+  const bars = layoutWeek([...items, ...eventItems(monday)], monday);
+  const visible = bars.filter((b) => b.lane < lanes);
+  const cells = [];
+  for (let i = 0; i < 7; i++) {
+    const n = monday + i;
+    const iso = fromDay(n);
+    const month = Number(iso.slice(5, 7));
+    const first = iso.endsWith('-01');
+    const hidden = bars.filter((b) => b.lane >= lanes && b.from <= i && i <= b.to).length;
+    cells.push(`<button type="button" class="cal-day ${month % 2 ? 'm-odd' : 'm-even'} ${first ? 'm-first' : ''} ${iso === today ? 'is-today' : ''} ${i >= 5 ? 'weekend' : ''}" data-act="cal-day" data-date="${iso}" aria-label="${iso}">
+      <b>${first ? `${month} 月 1` : Number(iso.slice(8))}</b>
+      ${hidden ? `<small class="cal-more">+${hidden}</small>` : ''}
+    </button>`);
+  }
+  return `<div class="cal-week" style="height:${rowH}px" data-monday="${monday}">
+    <div class="cal-weeknum">${weekNumber(monday, state.settings)}</div>
+    <div class="cal-week-body">
+      <div class="cal-cells">${cells.join('')}</div>
+      <div class="cal-bars" aria-hidden="true">${visible.map((b) => barHTML(b, monday)).join('')}</div>
+    </div>
+  </div>`;
 }
 
 export function renderCalendar(main) {
   const today = todayStr();
-  const ym = currentMonth();
-  const [y, m] = ym.split('-').map(Number);
-  const zoomed = span() !== 'month';
-  const weeks = zoomed ? Array.from({ length: span() }, (_, i) => weekStart() + 7 * i) : monthWeeks(ym);
-  const title = zoomed ? `${fmtMD(fromDay(weeks[0]))}–${fmtMD(fromDay(weeks[weeks.length - 1] + 6))}` : `${y} 年 ${m} 月`;
-  const tasks = visibleTasks(today, { archived: true }); // the calendar is also the record of what happened
-  gcalEnsure(fromDay(weeks[0]), fromDay(weeks[weeks.length - 1] + 6));
-
+  const todayN = toDay(today);
+  if (calendar.top == null) calendar.top = span() === 'month' ? monthStartWeek(todayN) : mondayOf(todayN);
   const avail = (main.clientHeight || innerHeight) - (innerWidth < 768 ? 200 : 150);
-  const rowH = Math.max(MIN_ROW_H, avail / weeks.length);
+  const rowH = Math.max(MIN_ROW_H, Math.floor(avail / ROWS[span()]));
   const lanes = Math.max(2, Math.floor((rowH - DAY_HEAD_H - MORE_H) / LANE_H));
 
-  let markedThisMonth = false;
-  const weekRows = weeks.map((monday) => {
-    const bars = layoutWeek([...tasks, ...eventItems(monday)], monday);
-    const visible = bars.filter((b) => b.lane < lanes);
-    const cells = [];
-    for (let i = 0; i < 7; i++) {
-      const n = monday + i;
-      const iso = fromDay(n);
-      const hidden = bars.filter((b) => b.lane >= lanes && b.from <= i && i <= b.to).length;
-      if ((zoomed || iso.slice(0, 7) === ym) && tasks.some((t) => isActiveOn(t, iso) && isImportant(t, iso))) markedThisMonth = true;
-      cells.push(`<button type="button" class="cal-day ${!zoomed && iso.slice(0, 7) !== ym ? 'out' : ''} ${iso === today ? 'is-today' : ''} ${i >= 5 ? 'weekend' : ''}" data-act="cal-day" data-date="${iso}" aria-label="${iso}">
-        <b>${zoomed && (iso.endsWith('-01') || n === weeks[0]) ? `${Number(iso.slice(5, 7))}/` : ''}${Number(iso.slice(8))}</b>
-        ${hidden ? `<small class="cal-more">+${hidden}</small>` : ''}
-      </button>`);
-    }
-    return `<div class="cal-week ${zoomed ? 'zoomed' : ''}" style="min-height:${MIN_ROW_H}px">
-      <div class="cal-weeknum">${weekNumber(monday, state.settings)}</div>
-      <div class="cal-week-body">
-        <div class="cal-cells">${cells.join('')}</div>
-        <div class="cal-bars" aria-hidden="true">${visible.map((b) => barHTML(b, monday)).join('')}</div>
-      </div>
-    </div>`;
-  }).join('');
+  // Keep the rendered weeks around the anchor; scrolling near an end renders more.
+  if (!calendar.weeks || calendar.top < calendar.from + EDGE * 7 || calendar.top > calendar.from + (calendar.weeks - EDGE - ROWS[span()]) * 7) {
+    calendar.from = calendar.top - SPREAD * 7;
+    calendar.weeks = SPREAD * 2 + 1;
+  }
+  calendar.rowH = rowH;
+  const first = calendar.from;
+  const last = first + calendar.weeks * 7 - 1;
+  const items = calItems(visibleTasks(today, { archived: true })); // the calendar is also the record of what happened
+  gcalEnsure(fromDay(calendar.top), fromDay(calendar.top + ROWS[span()] * 7 + 6));
 
-  const hint = !markedThisMonth && prefs.calDim && state.tasks.length ? '｜點日期把任務加星號' : '';
+  const weekRows = Array.from({ length: calendar.weeks }, (_, i) => weekHTML(first + i * 7, items, today, lanes, rowH)).join('');
+  const marked = items.some((it) => isActiveOn(it, today) && isImportant(it, today));
+  const hint = !marked && prefs.calDim && state.tasks.length ? '｜點日期把任務加星號' : '';
 
   main.innerHTML = `<div class="cal-view">
     <div class="g-head-wrap">
-      ${headerHTML('計畫', `月曆｜雙指縮放看月、3 週或 2 週${hint}`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
+      ${headerHTML('計畫', `月曆｜上下捲動跨月，雙指縮放${hint}`, '<button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>')}
       <div class="g-controls">
         ${planSegHTML()}
         <div class="tb-nav">
           <button type="button" class="btn-circle" data-act="cal-shift" data-n="-1" aria-label="往前">${icon.back}</button>
-          <b>${title}</b>
+          <b id="cal-title">${monthLabel(calendar.top)}</b>
           <button type="button" class="btn-circle" data-act="cal-shift" data-n="1" aria-label="往後">${icon.chevR}</button>
         </div>
         <div class="seg span-seg" role="group" aria-label="範圍">${SPANS.map((k) => `<button type="button" class="${span() === k ? 'on' : ''}" data-act="cal-span" data-v="${k}" aria-pressed="${span() === k}">${SPAN_LABEL[k]}</button>`).join('')}</div>
@@ -174,28 +228,84 @@ export function renderCalendar(main) {
     </div>
     <div class="cal-scroll">
       <div class="cal-head"><span class="cal-weeknum">週</span><div class="cal-head-days">${WEEKDAYS.map((d) => `<span>${d}</span>`).join('')}</div></div>
-      <div class="cal-weeks">${weekRows}</div>
+      <div class="cal-weeks" data-range="${fromDay(first)}–${fromDay(last)}">${weekRows}</div>
     </div>
   </div>`;
+
+  const scroller = main.querySelector('.cal-scroll');
+  scroller.scrollTop = ((calendar.top - first) / 7) * rowH + calendar.offset;
+  scroller.addEventListener('scroll', onScroll, { passive: true });
+}
+
+let fetchTimer = 0;
+let extending = false;
+function onScroll(e) {
+  const el = e.currentTarget;
+  const { rowH, from, weeks } = calendar;
+  if (!rowH) return;
+  const idx = Math.max(0, Math.min(weeks - 1, Math.floor(el.scrollTop / rowH)));
+  calendar.top = from + idx * 7;
+  calendar.offset = el.scrollTop - idx * rowH;
+  if (calendar.target != null && Math.abs(el.scrollTop - ((calendar.target - from) / 7) * rowH) < 2) calendar.target = null;
+  const title = document.getElementById('cal-title');
+  if (title) title.textContent = monthLabel(calendar.top + (calendar.offset > rowH / 2 ? 7 : 0));
+  clearTimeout(fetchTimer);
+  fetchTimer = setTimeout(() => gcalEnsure(fromDay(calendar.top), fromDay(calendar.top + ROWS[span()] * 7 + 6)), 250);
+  if (extending) return;
+  if (idx < EDGE || idx > weeks - EDGE - ROWS[span()]) {
+    extending = true;
+    requestAnimationFrame(() => {
+      requestRender();
+      extending = false;
+    });
+  }
+}
+
+// Move the view so `monday` is the top week, smoothly when it is already rendered.
+function scrollToWeek(monday) {
+  const scroller = document.querySelector('.cal-scroll');
+  const inRange = monday >= calendar.from && monday <= calendar.from + (calendar.weeks - ROWS[span()]) * 7;
+  if (scroller && inRange) {
+    calendar.target = monday;
+    scroller.scrollTo({ top: ((monday - calendar.from) / 7) * calendar.rowH, behavior: 'smooth' });
+    return;
+  }
+  calendar.target = null;
+  calendar.top = monday;
+  calendar.offset = 0;
+  requestRender();
 }
 
 /* ---------- Day panel ---------- */
 
 function dayPanel(iso) {
   const day = toDay(iso);
+  const today = todayStr();
   const list = state.tasks
     .filter((t) => isActiveOn(t, iso))
     .sort((a, b) => Number(isImportant(b, iso)) - Number(isImportant(a, iso)) || a.order - b.order);
   const rows = list.map((t) => {
     const important = isImportant(t, iso);
     const color = taskColor(t) || FREE_BLOCK_COLOR;
-    return `<div class="row day-row ${percent(t) >= 100 ? 'is-done' : ''}">
+    const subs = subsForDay(t, iso, today, { withDone: true }).filter((s) => s.start || s.repeat);
+    const subRows = subs.map((s) => {
+      const daily = !!s.repeat && occursOn(s, iso, t);
+      const done = daily ? subDoneOn(s, iso) : s.done;
+      return `<div class="row day-sub ${done ? 'is-done' : ''}">
+        <button type="button" class="check small ${done ? 'on' : ''}" data-act="cal-sub" data-id="${esc(t.id)}" data-sub="${esc(s.id)}" data-date="${iso}" ${daily ? 'data-daily="1"' : ''} role="checkbox" aria-checked="${done}" aria-label="完成：${esc(s.title)}"></button>
+        <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
+          <span class="row-title">${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}</span>
+          <span class="row-meta"><span>${esc(s.repeat ? '重複' : fmtRange(s.start, s.end))}</span></span>
+        </button>
+      </div>`;
+    }).join('');
+    return `<div class="row day-row ${isDone(t) ? 'is-done' : ''}">
       <button type="button" class="star-btn ${important ? 'on' : ''}" data-act="cal-star" data-id="${esc(t.id)}" data-date="${iso}" ${t.priority === 3 ? 'disabled title="優先度為高的任務每天都算最重要"' : ''} aria-pressed="${important}" aria-label="標為這天最重要">${important ? icon.starOn : icon.star}</button>
       <button type="button" class="row-main" data-act="open-task" data-id="${esc(t.id)}">
         <span class="row-title"><i class="dot" style="background:${esc(color)}"></i> ${esc(t.title) || '<em>未命名任務</em>'}</span>
         <span class="row-meta"><span>${esc(fmtRange(t.start, t.end))}</span>${t.priority === 3 ? '<span>優先度高</span>' : ''}</span>
       </button>
-    </div>`;
+    </div>${subRows}`;
   }).join('');
   const [, m, d] = iso.split('-').map(Number);
   const fmt = (n) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
@@ -207,7 +317,7 @@ function dayPanel(iso) {
     </div>` : '';
   openPanel(`${m} 月 ${d} 日 星期${WEEKDAYS[weekdayIdx(day)]}`, `
     <div class="card">${rows || '<p class="tray-empty">這天沒有任務。</p>'}</div>
-    <p class="group-foot">星號只影響這一天。要讓任務每天都算最重要，把優先度設為「高」。</p>
+    <p class="group-foot">任務底下是它在這天的子任務。星號只影響這一天；要讓任務每天都算最重要，把優先度設為「高」。</p>
     ${events}
     <div class="card panel-actions">
       <button type="button" class="row form-row link-row" data-act="cal-open-day" data-date="${iso}">開啟這天的時間表</button>
@@ -220,12 +330,14 @@ Object.assign(actions, {
   'cal-dim': () => setPref({ calDim: !prefs.calDim }),
   'cal-shift': (el) => {
     const n = Number(el.dataset.n);
-    if (span() === 'month') calendar.month = addMonths(currentMonth(), n);
-    else {
-      calendar.start = weekStart() + 7 * n * span();
-      calendar.month = fromDay(calendar.start + 3).slice(0, 7);
-    }
-    requestRender();
+    const top = calendar.target ?? calendar.top ?? mondayOf(toDay(todayStr()));
+    if (span() === 'month') {
+      // To the first week of the previous or next month.
+      const [y, m] = fromDay(top + Math.floor(ROWS[span()] / 2) * 7 + 3).split('-').map(Number);
+      const next = new Date(y, m - 1 + n, 1);
+      const iso = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-01`;
+      scrollToWeek(mondayOf(toDay(iso)));
+    } else scrollToWeek(top + 7 * n * span());
   },
   'cal-span': (el) => setSpan(el.dataset.v === 'month' ? 'month' : Number(el.dataset.v)),
   'cal-day': (el) => dayPanel(el.dataset.date),
@@ -237,6 +349,18 @@ Object.assign(actions, {
       touch(t);
     });
     dayPanel(el.dataset.date);
+  },
+  'cal-sub': (el) => {
+    const t = getTask(el.dataset.id);
+    const s = t?.subtasks.find((x) => x.id === el.dataset.sub);
+    if (!s) return;
+    commit(() => {
+      if (el.dataset.daily) toggleSubOn(s, el.dataset.date);
+      else s.done = !s.done;
+      touch(t);
+    });
+    dayPanel(el.dataset.date);
+    offerFinish(t);
   },
   'cal-open-day': (el) => {
     closeSheet();
@@ -254,9 +378,7 @@ Object.assign(actions, {
   },
 });
 
-
 export function calendarToday() {
-  calendar.month = todayStr().slice(0, 7);
-  calendar.start = null;
-  requestRender();
+  const today = toDay(todayStr());
+  scrollToWeek(span() === 'month' ? monthStartWeek(today) : mondayOf(today));
 }

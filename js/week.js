@@ -2,12 +2,12 @@
 // below. The timeline is the same state.blocks the day table edits, so both always agree, and
 // like the day table it never changes a task's own dates.
 import {
-  DAY_MINUTES, FREE_BLOCK_COLOR, SLOT, WEEKDAYS, assignLanes, blocksOn, fmtDuration, fmtMD, fmtMinute, fromDay, inkOn, isActiveOn,
+  DAY_MINUTES, FREE_BLOCK_COLOR, SLOT, WEEKDAYS, assignLanes, blocksOn, fmtDuration, fmtMD, fmtMinute, fromDay, inkOn, isActiveOn, isDone,
   isImportant, isSubOverdue, makeBlock, mondayOf, occursOn, percent, plannedMinutes, repeatLabel, subDoneOn, subsForDay, toDay, todayStr,
   weekNumber,
 } from './core.js';
-import { addTask, blockInfo, commit, focusDate, getTask, liveTasks, state, taskColor } from './store.js';
-import { actions, enters, esc, icon } from './ui.js';
+import { addTask, blockInfo, commit, focusDate, getTask, liveTasks, state, taskColor, prefs, setPref } from './store.js';
+import { actions, enters, esc, icon, resetters, resizers } from './ui.js';
 import { headerHTML, planSegHTML, shell } from './views.js';
 import { openBlock } from './planner.js';
 import { gantt } from './gantt.js';
@@ -38,13 +38,13 @@ const nowMinute = () => {
 function dayTasks(iso, today) {
   return liveTasks()
     .filter((t) => t.start && t.end && t.end >= t.start && (isActiveOn(t, iso)
-      || (iso === today && percent(t) < 100 && (t.end < today || t.subtasks.some((s) => isSubOverdue(s, today))))))
-    .sort((a, b) => Number(percent(a) >= 100) - Number(percent(b) >= 100)
+      || (iso === today && !isDone(t) && (t.end < today || t.subtasks.some((s) => isSubOverdue(s, today))))))
+    .sort((a, b) => Number(isDone(a)) - Number(isDone(b))
       || Number(isImportant(b, iso)) - Number(isImportant(a, iso)) || a.end.localeCompare(b.end) || a.order - b.order);
 }
 
 function itemHTML(t, iso, today) {
-  const done = percent(t) >= 100;
+  const done = isDone(t);
   const late = !done && t.end < iso;
   const color = taskColor(t) || FREE_BLOCK_COLOR;
   const subs = done ? [] : subsForDay(t, iso, today, { withDone: true });
@@ -159,7 +159,8 @@ export function renderWeek(main) {
       <div class="wk-scroll">
         <div class="wk-inner" style="--hh:${h}px">
           <div class="wk-head"><div class="wk-corner">W${weekNumber(monday, state.settings)}</div>${heads.join('')}</div>
-          <div class="wk-tasks"><div class="wk-corner wk-corner-label">待辦</div>${lists.join('')}</div>
+          <div class="wk-tasks" ${prefs.wkTasksH > 0 ? `style="height:${Math.round(prefs.wkTasksH)}px;max-height:none"` : ''}><div class="wk-corner wk-corner-label">待辦</div>${lists.join('')}</div>
+          <div class="row-resizer wk-resizer" data-resize="week-tasks" title="拖曳調整待辦區高度，點兩下還原" aria-hidden="true"></div>
           <div class="wk-body"><div class="wk-hours">${hours}</div>${cols.join('')}</div>
         </div>
       </div>
@@ -167,6 +168,7 @@ export function renderWeek(main) {
   </div>`;
 
   const scroller = main.querySelector('.wk-scroll');
+  placeWeekResizer(main);
   if (week.scroll) {
     scroller.scrollTop = week.scroll.top;
     scroller.scrollLeft = week.scroll.left;
@@ -180,6 +182,39 @@ export function renderWeek(main) {
     }
   }
 }
+
+/* ---------- The to-do area's height ---------- */
+
+// The border under the to-do lists sticks right below them, wherever the timeline scrolls.
+function placeWeekResizer(root = document) {
+  const tasks = root.querySelector('.wk-tasks');
+  const bar = root.querySelector('.wk-resizer');
+  const head = root.querySelector('.wk-head');
+  if (tasks && bar && head) bar.style.top = `${head.offsetHeight + tasks.offsetHeight}px`;
+}
+
+const maxTasksH = () => Math.round(innerHeight * 0.75);
+resizers['week-tasks'] = () => {
+  const tasks = document.querySelector('.wk-tasks');
+  if (!tasks) return null;
+  const start = tasks.offsetHeight;
+  let h = start;
+  gantt.dragging = true; // hold re-renders until the border is let go
+  return {
+    axis: 'y',
+    onMove: (d) => {
+      h = Math.min(maxTasksH(), Math.max(36, Math.round(start + d)));
+      tasks.style.height = `${h}px`;
+      tasks.style.maxHeight = 'none';
+      placeWeekResizer();
+    },
+    onEnd: () => {
+      gantt.dragging = false;
+      setPref({ wkTasksH: h });
+    },
+  };
+};
+resetters['week-tasks'] = () => setPref({ wkTasksH: null });
 
 /* ---------- Actions ---------- */
 

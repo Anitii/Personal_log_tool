@@ -1,7 +1,7 @@
 // Today, Tasks and Settings views, plus the row markup they share.
 import {
   DAY_MINUTES, DEFAULT_STATUS_COLORS, FREE_BLOCK_COLOR, PALETTE, STATUS, WEEKDAYS, addDays, blocksOn, deferTask, fitParentToSubs, fmtDuration,
-  fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isImportant, makeSub, mondayOf, moveProject, newId, normalize, percent, plannedMinutes, setDone,
+  allSubsDone, fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isDone, isImportant, makeSub, mondayOf, moveProject, newId, normalize, percent, plannedMinutes, setDone,
   isSubOverdue, occursOn, repeatLabel, statusOf, subDoneOn, subStatusOf, subsForDay, tasksForDay, toCSV, toDay, todayStr, toggleFocusDay,
   toggleSubOn, weekNumber, weekdayIdx,
 } from './core.js';
@@ -191,7 +191,7 @@ function nowCard(today, blocks, minute) {
 function weekCard(today) {
   const day = toDay(today);
   const monday = mondayOf(day);
-  const open = liveTasks().filter((t) => percent(t) < 100);
+  const open = liveTasks().filter((t) => !isDone(t));
   const loads = Array.from({ length: 7 }, (_, i) => {
     const iso = fromDay(monday + i);
     return { iso, i, active: open.filter((t) => isActiveOn(t, iso)).length, due: open.filter((t) => t.end === iso).length };
@@ -249,7 +249,7 @@ function lateSubs(t, today) {
 function soonCard(today) {
   const limit = addDays(today, 7);
   const soon = liveTasks()
-    .filter((t) => percent(t) < 100 && t.end && t.end > today && t.end <= limit && t.start && t.start <= t.end)
+    .filter((t) => !isDone(t) && t.end && t.end > today && t.end <= limit && t.start && t.start <= t.end)
     .sort((a, b) => a.end.localeCompare(b.end));
   if (!soon.length) return '';
   const rows = soon.map((t) => {
@@ -290,7 +290,7 @@ export function renderToday() {
     return total ? `<span>已排 ${esc(fmtDuration(total))}</span>` : '';
   };
   const focusList = liveTasks()
-    .filter((t) => percent(t) < 100 && (isActiveOn(t, today) || (t.end >= today && t.subtasks.some((s) => isSubOverdue(s, today)))))
+    .filter((t) => !isDone(t) && (isActiveOn(t, today) || (t.end >= today && t.subtasks.some((s) => isSubOverdue(s, today)))))
     .sort((a, b) => Number(isImportant(b, today)) - Number(isImportant(a, today)) || a.end.localeCompare(b.end) || a.order - b.order);
   const dueLabel = (t) => (t.end === today ? '<span class="text-late">今天到期</span>' : '');
   const rows = focusList.map((t) =>
@@ -511,6 +511,17 @@ export function refreshSyncLine() {
 
 /* ---------- Handlers ---------- */
 
+// Checking the last subtask doesn't finish the task by itself; it offers to.
+export function offerFinish(t) {
+  if (!t || isDone(t) || !allSubsDone(t)) return;
+  toast(`「${t.title || '未命名任務'}」的子任務都完成了`, () => {
+    commit(() => {
+      setDone(t, true);
+      touch(t);
+    }, { undo: `已完成「${t.title || '未命名任務'}」` });
+  }, '標為完成');
+}
+
 Object.assign(actions, {
   'new-task': () => {
     const today = todayStr();
@@ -521,7 +532,7 @@ Object.assign(actions, {
   'open-task': (el) => openTask(el.dataset.id, { focusSub: el.dataset.focusSub }),
   'toggle-task': (el) => {
     const t = getTask(el.dataset.id);
-    const done = percent(t) < 100;
+    const done = !isDone(t);
     commit(() => {
       setDone(t, done);
       touch(t);
@@ -563,6 +574,7 @@ Object.assign(actions, {
       else s.done = !s.done;
       touch(t);
     });
+    offerFinish(t);
   },
   'toggle-expand': (el) => {
     const expanded = { ...prefs.expanded };

@@ -2,7 +2,7 @@
 // text field; the others show rendered text. Keeping input in real text fields makes
 // Zhuyin and Pinyin composition behave exactly as it does anywhere else.
 import {
-  WEEKDAYS, addDays, addMonths, blocksOn, fmtMinute, fromDay, isActiveOn, monthWeeks, percent, toDay, todayStr, weekdayIdx,
+  WEEKDAYS, addDays, addMonths, blocksOn, fmtMinute, fromDay, isActiveOn, isDone, monthWeeks, percent, toDay, todayStr, weekdayIdx,
 } from './core.js';
 import {
   detectShortcut, diaryDays, diaryToMarkdown, inlineSegments, isListType, makeBlockNode, olNumbers, parseMarkdown, plainPreview,
@@ -333,7 +333,7 @@ function runSlash(item) {
     return;
   }
   if (item.k === 'tasks') {
-    insertLines(i, state.tasks.filter((t) => isActiveOn(t, ed.date)).map((t) => makeBlockNode('todo', t.title || '未命名任務', { checked: percent(t) >= 100 })));
+    insertLines(i, state.tasks.filter((t) => isActiveOn(t, ed.date)).map((t) => makeBlockNode('todo', t.title || '未命名任務', { checked: isDone(t) })));
     return;
   }
   ed.blocks[i].text = '';

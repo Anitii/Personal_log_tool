@@ -23,7 +23,7 @@ test('upgrading version 1 data keeps every task and only softens the old colors'
     deleted: { gone: 11 },
   };
   const s = normalize(JSON.parse(JSON.stringify(v1)));
-  const { color, focusDays, archivedAt, ...task } = s.tasks[0];
+  const { color, focusDays, archivedAt, done, ...task } = s.tasks[0];
   task.subtasks = task.subtasks.map(({ repeat, repeatDays, repeatEvery, doneDays, ...sub }) => {
     assert.equal(repeat, '', 'old subtasks do not repeat');
     assert.deepEqual(doneDays, []);
@@ -101,7 +101,7 @@ test('the day tray offers tasks active that day, important first, plus overdue o
   const a = makeTask({ title: 'a', start: '2026-11-01', end: '2026-11-05' });
   const b = makeTask({ title: 'b', start: '2026-11-02', end: '2026-11-02', focusDays: ['2026-11-02'] });
   const late = makeTask({ title: 'late', start: '2026-10-01', end: '2026-10-05' });
-  const done = makeTask({ title: 'done', start: '2026-11-02', end: '2026-11-02', progress: 100 });
+  const done = makeTask({ title: 'done', start: '2026-11-02', end: '2026-11-02', progress: 100, done: true });
   const future = makeTask({ title: 'future', start: '2026-11-20', end: '2026-11-21' });
   s.tasks = [a, b, late, done, future];
   assert.deepEqual(tasksForDay(s, TODAY, TODAY).map((t) => t.title), ['b', 'late', 'a']);
@@ -334,4 +334,29 @@ test('an overdue subtask stays on today until it is done or moved', async () => 
   late.start = '2026-11-04';
   late.end = '2026-11-05';
   assert.equal(subsForDay(t, TODAY, TODAY).length, 0, 'moved out of the past, so it follows its new dates');
+});
+
+test('a task is finished only when checked off', async () => {
+  const { allSubsDone, isDone, setDone } = await import('../js/core.js');
+  const t = makeTask({ start: '2026-10-01', end: '2026-10-20', subtasks: [makeSub({ title: 'a', done: true }), makeSub({ title: 'b', done: true })] });
+  assert.equal(isDone(t), false, 'every subtask checked is not the task checked');
+  assert.equal(allSubsDone(t), true, 'but it is worth offering');
+  assert.equal(statusOf(t, TODAY), 'late', 'past its end and not checked off: overdue');
+  setDone(t, true);
+  assert.equal(statusOf(t, TODAY), 'done');
+  const slider = makeTask({ start: '2026-10-01', end: '2026-10-20', progress: 100 });
+  assert.equal(statusOf(slider, TODAY), 'late', 'the progress slider at 100% does not finish it');
+});
+
+test('old data: what read as finished stays finished', () => {
+  const old = { version: 2, tasks: [
+    { id: 'full', title: 'x', start: '2026-10-01', end: '2026-10-02', progress: 100 },
+    { id: 'subs', title: 'y', start: '2026-10-01', end: '2026-10-02', subtasks: [{ id: 's1', title: 'a', done: true }] },
+    { id: 'half', title: 'z', start: '2026-10-01', end: '2026-10-02', progress: 50 },
+    { id: 'flag', title: 'w', start: '2026-10-01', end: '2026-10-02', progress: 100, done: false },
+  ] };
+  const s = normalize(old);
+  const done = Object.fromEntries(s.tasks.map((t) => [t.id, t.done]));
+  assert.deepEqual(done, { full: true, subs: true, half: false, flag: false }, 'an explicit flag wins over the old 100% rule');
+  assert.equal(sameDocument(s, normalize(JSON.parse(JSON.stringify(s)))), true, 'normalizing twice changes nothing');
 });

@@ -1,10 +1,11 @@
 // Task detail sheet: bottom sheet on phones, centered on tablets, inspector on desktop.
 import {
-  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtRange, makeSub, makeTask, newId, occursOn, percent, repeatLabel, statusOf,
+  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtRange, isDone, makeSub, makeTask, newId, occursOn, percent, repeatLabel, setDone, statusOf,
   subDoneOn, subStatusOf, todayStr, toggleSubOn,
 } from './core.js';
 import { commit, deleteTask, getTask, state, touch } from './store.js';
 import { actions, changes, colorRowHTML, enters, esc, icon, inputs } from './ui.js';
+import { offerFinish } from './views.js';
 
 let current = null; // { id, isNew }
 let panelClose = null;
@@ -85,6 +86,7 @@ function refreshMeta() {
   slider.style.setProperty('--pct', `${pct}%`);
   root.querySelector('#sheet-pct').textContent = `${pct}%`;
   root.querySelector('#sheet-progress-hint').hidden = t.subtasks.length === 0;
+  root.querySelector('#sheet-done').checked = isDone(t);
   root.querySelector('#sheet-sub-count').textContent = t.subtasks.length ? `${t.subtasks.filter((s) => s.done).length}/${t.subtasks.length}` : '';
   // Dates can change from a subtask edit; leave alone whichever field is being edited.
   for (const [sel, val] of [['#sheet-start', t.start], ['#sheet-end', t.end]]) {
@@ -140,7 +142,9 @@ export function openTask(id, { isNew = false, focusSub } = {}) {
           <span id="sheet-pct" class="form-value num"></span>
         </div>
         <p id="sheet-progress-hint" class="form-hint" hidden>有子任務時，完成度由子任務自動計算。</p>
+        <label class="row form-row"><span class="form-label">已完成</span><input id="sheet-done" type="checkbox" class="switch" data-ch="sheet-done"></label>
       </div>
+      <p class="group-foot">只有打開「已完成」才算完成。過了結束日還沒完成的任務算逾期，會排在甘特圖最上面。</p>
 
       <h3 class="group-head in-sheet">子任務 <span id="sheet-sub-count" class="group-count"></span></h3>
       <div class="card">
@@ -265,6 +269,7 @@ Object.assign(actions, {
     if (!s) return;
     save(() => (el.dataset.date ? toggleSubOn(s, el.dataset.date) : (s.done = !s.done)));
     renderSubs();
+    offerFinish(task());
   },
   'sheet-sub-day': (el) => {
     const s = findSub(el);
@@ -325,6 +330,10 @@ Object.assign(inputs, {
 });
 
 Object.assign(changes, {
+  'sheet-done': (el) => {
+    save((t) => setDone(t, el.checked));
+    renderSubs();
+  },
   'sheet-project': (el) => save((t) => (t.projectId = el.value)),
   'sheet-start': (el) => {
     save((t) => {

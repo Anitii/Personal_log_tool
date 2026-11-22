@@ -161,7 +161,7 @@ export function applyWorkbook(parsed) {
       };
       parsed.projects.forEach(projectId);
       fresh.forEach((t, i) => {
-        s.tasks.push(makeTask({ title: t.title, projectId: projectId(t.project), start: t.start, end: t.end, progress: t.progress, notes: t.notes, order: now + i }));
+        s.tasks.push(makeTask({ title: t.title, projectId: projectId(t.project), start: t.start, end: t.end, progress: t.progress, done: t.progress >= 100, notes: t.notes, order: now + i }));
       });
       if (parsed.baseMonday && parsed.baseWeek != null) {
         s.settings = { ...s.settings, baseMonday: parsed.baseMonday, baseWeek: parsed.baseWeek, updatedAt: now };

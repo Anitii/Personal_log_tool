@@ -1,12 +1,12 @@
 // Gantt view. Geometry is plain date→pixel arithmetic; while dragging, only the affected
 // bars are touched inside requestAnimationFrame and state changes once on release.
 import {
-  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtMD, fmtRange, fromDay, inkOn, mondayOf, occurrences, percent, repeatLabel, shiftTask,
-  statusOf, subDoneOn, subStatusOf, toDay, todayStr, weekNumber, weekdayIdx,
+  STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtMD, fmtRange, fromDay, inkOn, isDone, isSubOverdue, mondayOf, occurrences, occursOn,
+  percent, repeatLabel, shiftTask, statusOf, subDoneOn, subStatusOf, subsForDay, tasksForDay, toDay, todayStr, weekNumber, weekdayIdx,
 } from './core.js';
 import { commit, getProject, getTask, prefs, savePrefs, setPref, state, touch, visibleTasks } from './store.js';
 import { onPinch } from './pinch.js';
-import { actions, changes, esc, icon } from './ui.js';
+import { actions, changes, esc, icon, resetters, resizers } from './ui.js';
 import { chipsHTML, emptyHTML, headerHTML, planSegHTML } from './views.js';
 
 // One continuous zoom, set by pinching. Wide enough days show one column per day, grouped by
@@ -32,17 +32,26 @@ export const gantt = {
 
 let view = null; // geometry of the current render
 
+// The task column's width is the user's once they drag its border (phones keep their own).
+const labelKey = (phone) => (phone ? 'ganttLabelWPhone' : 'ganttLabelW');
+const DETAIL_COLS_MIN = 420; // narrower than this, the extra columns would crush the names
+const maxLabelW = () => Math.min(760, Math.round(innerWidth * 0.75));
+
 function layout() {
   const w = innerWidth;
   const phone = w < NARROW;
   const canDetail = w >= DETAIL_MIN;
-  const detail = canDetail && !prefs.compact;
+  const custom = Number(prefs[labelKey(phone)]);
+  const wantDetail = canDetail && !prefs.compact;
+  const labelW = Number.isFinite(custom) && custom > 0
+    ? Math.min(maxLabelW(), Math.max(90, custom))
+    : wantDetail ? 500 : phone ? 136 : 228;
   return {
     phone,
     canDetail,
-    detail,
+    detail: wantDetail && labelW >= DETAIL_COLS_MIN,
     dayW: dayWidth(phone),
-    labelW: detail ? 500 : phone ? 136 : 228,
+    labelW,
   };
 }
 
@@ -87,10 +96,10 @@ function barColorStyle(t) {
   return c ? `--st:${esc(c)};--ink:${inkOn(c)};` : '';
 }
 
-function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rangeLabel, colorStyle = '' }) {
+function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rangeLabel, colorStyle = '', still = false }) {
   const s = toDay(start);
   const e = toDay(end);
-  const common = `data-bar data-act="open-task" data-id="${esc(taskId)}" ${subId ? `data-sub="${esc(subId)}" data-focus-sub="${esc(subId)}"` : ''} role="button" tabindex="0"
+  const common = `${still ? '' : 'data-bar'} data-act="open-task" data-id="${esc(taskId)}" ${subId ? `data-sub="${esc(subId)}" data-focus-sub="${esc(subId)}"` : ''} role="button" tabindex="0"
     aria-label="${esc(title)}，${esc(rangeLabel)}，${esc(STATUS[st].label)}"`;
   if (s === e) {
     const size = isSub ? 13 : 17;
@@ -117,6 +126,12 @@ function repeatHTML(t, s, colorStyle) {
   return occ.map((d) => `<i class="rep-dot ${subDoneOn(s, d) ? 'on' : ''}" style="${colorStyle}left:${(toDay(d) - view.start) * view.dayW + view.dayW / 2 - size / 2}px;width:${size}px;height:${size}px" ${attrs} title="${esc(d)}"></i>`).join('');
 }
 
+// Rows can be dragged into a new order by their grip, unless the list is sorted by date.
+const canReorder = () => prefs.sort !== 'start';
+const gripHTML = (attrs) => (canReorder()
+  ? `<span class="g-grip" data-grip ${attrs} title="拖曳調整順序" aria-hidden="true">${icon.grip}</span>`
+  : '');
+
 function labelHTML(t, st, pct, l) {
   const hasSubs = t.subtasks.length > 0;
   const collapsed = !!prefs.collapsed[t.id];
@@ -134,7 +149,59 @@ function labelHTML(t, st, pct, l) {
        <span class="g-col c-num">${pct}%</span>
        <span class="g-col c-status"><span class="pill s-${STATUS[st].cls}">${esc(STATUS[st].label)}</span></span>`
     : '';
-  return `<div class="g-label">${twisty}${main}${cols}</div>`;
+  return `<div class="g-label">${gripHTML(`data-id="${esc(t.id)}"`)}${twisty}${main}${cols}</div>`;
+}
+
+// The layer above everything: what today holds, across all tasks. A task with subtasks
+// scheduled today is represented by those subtasks; otherwise by itself.
+function todayLayerHTML(items, todayIso, tw) {
+  const shown = new Set(items.map((t) => t.id));
+  const tasks = tasksForDay(state, todayIso, todayIso).filter((t) => shown.has(t.id));
+  const entries = [];
+  for (const t of tasks) {
+    const subs = subsForDay(t, todayIso, todayIso, { withDone: true });
+    if (subs.length) for (const s of subs) entries.push({ t, s });
+    else if (!t.subtasks.length || t.end < todayIso) entries.push({ t, s: null });
+  }
+  const open = !prefs.ganttTodayClosed;
+  const isOff = ({ t, s }) => (s ? (s.repeat && occursOn(s, todayIso, t) ? subDoneOn(s, todayIso) : s.done) : isDone(t));
+  const left = entries.filter((x) => !isOff(x)).length;
+  const [, m, d] = todayIso.split('-').map(Number);
+  const head = `<div class="g-row g-today-head" style="height:${SUB_H}px">
+      <div class="g-label"><button type="button" class="twisty ${open ? 'open' : ''}" data-act="gantt-today-layer" aria-expanded="${open}" aria-label="${open ? '收合' : '展開'}今天">${icon.chevR}</button>
+        <button type="button" class="g-today-title" data-act="gantt-today-layer"><b>今天 ${m}/${d}</b><span>${entries.length ? `${left} 項待完成，共 ${entries.length} 項` : '沒有排定的事'}</span></button></div>
+      <div class="g-track" style="width:${tw}px"></div>
+    </div>`;
+  if (!open) return head;
+  const rows = entries.map(({ t, s }) => {
+    const color = barColorStyle(t);
+    const project = getProject(t.projectId);
+    const dot = `<i class="dot" style="background:${esc(t.color || project?.color || 'var(--label3)')}"></i>`;
+    if (!s) {
+      const st = statusOf(t, todayIso);
+      return `<div class="g-row g-today-row" style="height:${SUB_H}px">
+        <div class="g-label"><button type="button" class="check small ${isDone(t) ? 'on' : ''}" data-act="toggle-task" data-id="${esc(t.id)}" role="checkbox" aria-checked="${isDone(t)}" aria-label="完成：${esc(t.title)}"></button>
+          <button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}"><span class="g-name">${dot}${esc(t.title) || '<em>未命名任務</em>'}${st === 'late' ? ' <span class="text-late">逾期</span>' : ''}</span></button></div>
+        <div class="g-track" style="width:${tw}px">${t.start && t.end && t.end >= t.start ? barHTML({ taskId: t.id, title: t.title, start: t.start, end: t.end, st, pct: percent(t), isSub: true, range: fmtRange(t.start, t.end), colorStyle: color, still: true }) : ''}</div>
+      </div>`;
+    }
+    const daily = !!s.repeat && occursOn(s, todayIso, t);
+    const done = isOff({ t, s });
+    const st = subStatusOf(s, todayIso, t);
+    const late = isSubOverdue(s, todayIso);
+    const from = s.start || t.start;
+    const to = s.end || t.end;
+    const track = s.repeat ? repeatHTML(t, s, color)
+      : from && to && to >= from ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: from, end: to, st, pct: 0, isSub: true, range: fmtRange(from, to), colorStyle: color, still: true }) : '';
+    return `<div class="g-row g-today-row ${done ? 'is-done' : ''}" style="height:${SUB_H}px">
+      <div class="g-label"><button type="button" class="check small ${done ? 'on' : ''}" data-act="toggle-sub" data-id="${esc(t.id)}" data-sub="${esc(s.id)}" ${daily ? `data-date="${todayIso}"` : ''} role="checkbox" aria-checked="${done}" aria-label="完成：${esc(s.title)}"></button>
+        <button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
+          <span class="g-name ${done ? 'struck' : ''}">${dot}${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}${late ? ' <span class="text-late">逾期</span>' : ''}</span>
+          <span class="g-meta">${esc(t.title || '未命名任務')}</span></button></div>
+      <div class="g-track" style="width:${tw}px">${track}</div>
+    </div>`;
+  }).join('');
+  return head + rows + '<div class="g-today-gap" aria-hidden="true"></div>';
 }
 
 function headerRows(l, today) {
@@ -214,7 +281,12 @@ export function renderGantt(main) {
       <label class="menu-item">色條依專案上色<input type="checkbox" class="switch" data-ch="gantt-bar-color" ${prefs.barColor === 'project' ? 'checked' : ''}></label>
     </div>` : '';
 
-  const trailing = `<div class="zoom-btns" role="group" aria-label="縮放">
+  const withSubs = items.filter((t) => t.subtasks.length);
+  const anyClosed = withSubs.some((t) => prefs.collapsed[t.id]);
+  const foldAll = withSubs.length
+    ? `<button type="button" class="btn-circle" data-act="gantt-fold-all" data-open="${anyClosed ? 1 : 0}" aria-label="${anyClosed ? '全部展開' : '全部收合'}" title="${anyClosed ? '全部展開' : '全部收合'}">${anyClosed ? icon.expandAll : icon.collapseAll}</button>`
+    : '';
+  const trailing = `${foldAll}<div class="zoom-btns" role="group" aria-label="縮放">
       <button type="button" data-act="gantt-zoom" data-f="0.7" aria-label="縮小，看更長的時間">−</button>
       <button type="button" data-act="gantt-zoom" data-f="1.43" aria-label="放大，看每一天">+</button></div>
     <button type="button" class="text-btn today-btn" data-act="plan-today">今天</button>
@@ -258,13 +330,14 @@ export function renderGantt(main) {
     if (t.subtasks.length && !prefs.collapsed[t.id]) {
       for (const s of t.subtasks) {
         const sst = subStatusOf(s, todayIso, t);
+        const late = isSubOverdue(s, todayIso);
         const sDated = s.start && s.end && s.end >= s.start;
         const track = s.repeat
           ? repeatHTML(t, s, barColorStyle(t))
           : sDated ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: s.start, end: s.end, st: sst, pct: 0, isSub: true, range: fmtRange(s.start, s.end), colorStyle: barColorStyle(t) }) : '';
-        rows.push(`<div class="g-row is-sub" style="height:${SUB_H}px">
-          <div class="g-label sub-label"><button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
-            <span class="g-name ${sst === 'done' ? 'struck' : ''}">${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}</span></button></div>
+        rows.push(`<div class="g-row is-sub" style="height:${SUB_H}px" data-parent="${esc(t.id)}" data-sub-row="${esc(s.id)}">
+          <div class="g-label sub-label">${gripHTML(`data-id="${esc(t.id)}" data-sub="${esc(s.id)}"`)}<button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
+            <span class="g-name ${sst === 'done' ? 'struck' : ''}">${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}${late ? ' <span class="text-late">逾期</span>' : ''}</span></button></div>
           <div class="g-track" style="width:${tw}px">${track}</div>
         </div>`);
       }
@@ -278,6 +351,7 @@ export function renderGantt(main) {
   const showToday = today >= r.start && today <= r.end;
   main.innerHTML = `<div class="gantt-view">
     ${headHTML}
+    <div class="g-scroll-wrap">
     <div class="g-scroll" tabindex="-1">
       <div class="g-canvas" style="--lw:${l.labelW}px;--tw:${tw}px;--dw:${l.dayW}px;width:${l.labelW + tw}px">
         <div class="g-head">
@@ -289,10 +363,14 @@ export function renderGantt(main) {
         </div>
         <div class="g-body">
           <div class="g-bg ${coarse(l.dayW) ? 'month' : 'week'}" aria-hidden="true">${weekendStripes(l)}${showToday ? `<i class="g-now" style="left:${(today - r.start) * l.dayW + l.dayW / 2}px"></i>` : ''}</div>
+          ${todayLayerHTML(items, todayIso, tw)}
           ${rows.join('') || '<div class="g-none">這個篩選條件下沒有任務</div>'}
+          <i class="g-drop" hidden></i>
           <div class="g-row g-add" style="height:${ROW_H}px"><div class="g-label"><button type="button" class="g-add-btn" data-act="new-task">${icon.plus}<span>新增任務</span></button></div><div class="g-track" style="width:${tw}px"></div></div>
         </div>
       </div>
+    </div>
+    <div class="col-resizer" data-resize="gantt-label" style="left:${l.labelW}px" title="拖曳調整任務欄寬度，點兩下還原" aria-hidden="true"></div>
     </div>
     ${legend}
   </div>`;
@@ -352,6 +430,31 @@ function zoomBy(factor, clientX) {
 }
 onPinch('.gantt-view .g-scroll', (f, x) => zoomBy(f, x));
 
+/* ---------- Task column width ---------- */
+
+resizers['gantt-label'] = (el) => {
+  const canvas = document.querySelector('.gantt-view .g-canvas');
+  if (!canvas || !view) return null;
+  const start = view.labelW;
+  const tw = view.days * view.dayW;
+  let w = start;
+  gantt.dragging = true;
+  return {
+    axis: 'x',
+    onMove: (d) => {
+      w = Math.min(maxLabelW(), Math.max(90, Math.round(start + d)));
+      canvas.style.setProperty('--lw', `${w}px`);
+      canvas.style.width = `${w + tw}px`;
+      el.style.left = `${w}px`;
+    },
+    onEnd: () => {
+      gantt.dragging = false;
+      setPref({ [labelKey(innerWidth < NARROW)]: w });
+    },
+  };
+};
+resetters['gantt-label'] = () => setPref({ [labelKey(innerWidth < NARROW)]: null });
+
 /* ---------- Actions ---------- */
 
 Object.assign(actions, {
@@ -359,6 +462,16 @@ Object.assign(actions, {
   'gantt-menu': () => {
     gantt.menuOpen = !gantt.menuOpen;
     requestRender();
+  },
+  'gantt-today-layer': () => setPref({ ganttTodayClosed: !prefs.ganttTodayClosed }),
+  'gantt-fold-all': (el) => {
+    if (el.dataset.open === '1') {
+      setPref({ collapsed: {} });
+      return;
+    }
+    const collapsed = {};
+    for (const t of state.tasks) if (t.subtasks.length) collapsed[t.id] = 1;
+    setPref({ collapsed });
   },
   'gantt-collapse': (el) => {
     const collapsed = { ...prefs.collapsed };
@@ -556,4 +669,135 @@ function collectSubBars(parentEl, t) {
     if (el) out.push({ el, s: toDay(s.start), e: toDay(s.end) });
   }
   return out;
+}
+
+/* ---------- Reordering rows by their grip ---------- */
+
+let reorder = null;
+
+// Where the dragged row would land: the gap nearest the pointer among its siblings.
+function reorderTarget(y) {
+  const r = reorder;
+  const top = r.body.getBoundingClientRect().top;
+  let best = null;
+  r.gaps.forEach((g, i) => {
+    const d = Math.abs(top + g - y);
+    if (!best || d < best.d) best = { i, d, y: g };
+  });
+  return best;
+}
+
+function reorderTick() {
+  if (!reorder?.active) return;
+  const r = reorder;
+  const rect = r.scroller.getBoundingClientRect();
+  if (r.y < rect.top + 60) r.scroller.scrollTop -= 8;
+  else if (r.y > rect.bottom - 40) r.scroller.scrollTop += 8;
+  r.target = reorderTarget(r.y);
+  r.line.hidden = false;
+  r.line.style.top = `${r.target.y - 1}px`;
+  r.line.style.left = `${r.indent}px`;
+  r.raf = requestAnimationFrame(reorderTick);
+}
+
+function beginReorder() {
+  const r = reorder;
+  r.active = true;
+  gantt.dragging = true;
+  document.body.classList.add('is-dragging');
+  r.rowEls.forEach((el) => el.classList.add('reordering'));
+  if (r.pointerType !== 'mouse') navigator.vibrate?.(8);
+  r.raf = requestAnimationFrame(reorderTick);
+}
+
+function endReorder(apply) {
+  const r = reorder;
+  reorder = null;
+  if (!r.active) return;
+  cancelAnimationFrame(r.raf);
+  r.line.hidden = true;
+  r.rowEls.forEach((el) => el.classList.remove('reordering'));
+  document.body.classList.remove('is-dragging');
+  gantt.dragging = false;
+  suppressClickUntil = performance.now() + 350;
+  gantt.scrollTop = r.scroller.scrollTop;
+  const i = r.target?.i;
+  if (!apply || i == null || i === r.from || i === r.from + 1) {
+    requestRender();
+    return;
+  }
+  const t = getTask(r.taskId);
+  if (!t) return;
+  if (r.subId) {
+    commit(() => {
+      const list = t.subtasks;
+      const [moved] = list.splice(r.from, 1);
+      list.splice(i > r.from ? i - 1 : i, 0, moved);
+      touch(t);
+    });
+    return;
+  }
+  // The task takes an order between its new neighbours; nothing else changes.
+  const ids = r.ids.filter((id) => id !== r.taskId);
+  const at = i > r.from ? i - 1 : i;
+  const prev = getTask(ids[at - 1]);
+  const next = getTask(ids[at]);
+  commit(() => {
+    t.order = prev && next ? (prev.order + next.order) / 2 : prev ? prev.order + 1 : next ? next.order - 1 : t.order;
+    touch(t);
+  });
+}
+
+export function initGanttReorder() {
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || reorder || drag) return;
+    const grip = e.target.closest?.('[data-grip]');
+    if (!grip) return;
+    const scroller = grip.closest('.g-scroll');
+    const body = scroller.querySelector('.g-body');
+    const bodyTop = body.getBoundingClientRect().top;
+    const offset = (el) => el.getBoundingClientRect().top - bodyTop;
+    const subId = grip.dataset.sub || '';
+    const taskId = grip.dataset.id;
+    let rows;
+    let ends;
+    let rowEls;
+    if (subId) {
+      rows = [...body.querySelectorAll(`.g-row.is-sub[data-parent="${CSS.escape(taskId)}"]`)];
+      ends = rows.map((el) => offset(el) + el.offsetHeight);
+      rowEls = rows.filter((el) => el.dataset.subRow === subId);
+    } else {
+      rows = [...body.querySelectorAll('.g-row.is-task')];
+      // A task's block runs to the next task: its subtasks travel with it.
+      const add = body.querySelector('.g-add');
+      ends = rows.map((el, i) => (rows[i + 1] ? offset(rows[i + 1]) : offset(add)));
+      const self = rows.find((el) => el.dataset.task === taskId);
+      rowEls = [self, ...body.querySelectorAll(`.g-row.is-sub[data-parent="${CSS.escape(taskId)}"]`)];
+    }
+    const ids = rows.map((el) => (subId ? el.dataset.subRow : el.dataset.task));
+    const from = ids.indexOf(subId || taskId);
+    if (from < 0) return;
+    reorder = {
+      taskId, subId, ids, from, rowEls, scroller, body,
+      gaps: [offset(rows[0]), ...ends],
+      line: body.querySelector('.g-drop'),
+      indent: subId ? 22 : 0,
+      y: e.clientY, startY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType, active: false,
+    };
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!reorder || e.pointerId !== reorder.pointerId) return;
+    reorder.y = e.clientY;
+    if (!reorder.active && Math.abs(e.clientY - reorder.startY) > 3) beginReorder();
+  });
+  document.addEventListener('pointerup', (e) => {
+    if (reorder && e.pointerId === reorder.pointerId) endReorder(true);
+  });
+  document.addEventListener('pointercancel', (e) => {
+    if (reorder && e.pointerId === reorder.pointerId) endReorder(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && reorder?.active) endReorder(false);
+  });
 }

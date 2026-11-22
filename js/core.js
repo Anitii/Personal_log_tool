@@ -96,11 +96,17 @@ function statusFrom(done, start, end, today) {
   if (start > today) return 'todo';
   return 'doing';
 }
-export const statusOf = (task, today) => statusFrom(percent(task) >= 100, task.start, task.end, today);
+// A task is finished only when it was checked off. Progress reaching 100%, or every subtask
+// being checked, does not finish it: past its end date it still reads as overdue.
+export const isDone = (task) => task.done === true;
+export const statusOf = (task, today) => statusFrom(isDone(task), task.start, task.end, today);
+// Every subtask checked while the task itself is still open: worth offering to finish it.
+export const allSubsDone = (task) => task.subtasks.length > 0 && task.subtasks.every((s) => subFraction(s, task) >= 1);
 export const subStatusOf = (sub, today, task = null) =>
   statusFrom(sub.done || (!!sub.repeat && subFraction(sub, task) >= 1), sub.start, sub.end, today);
 
 export function setDone(task, done) {
+  task.done = done;
   task.progress = done ? 100 : 0;
   task.subtasks.forEach((s) => {
     s.done = done;
@@ -311,7 +317,7 @@ export function blockSegments(start, end) {
 // What the day's tray offers: open tasks planned for that day, plus today's overdue ones.
 export function tasksForDay(state, iso, today) {
   return state.tasks
-    .filter((t) => !t.archivedAt && percent(t) < 100 && t.start && t.end && t.end >= t.start
+    .filter((t) => !t.archivedAt && !isDone(t) && t.start && t.end && t.end >= t.start
       && (isActiveOn(t, iso) || (iso === today && (t.end < today || t.subtasks.some((s) => isSubOverdue(s, today))))))
     .sort((a, b) => Number(isImportant(b, iso)) - Number(isImportant(a, iso)) || a.end.localeCompare(b.end) || a.order - b.order);
 }
@@ -375,7 +381,7 @@ export function layoutWeek(tasks, monday) {
 export function makeTask(fields = {}) {
   const now = Date.now();
   return {
-    id: newId(), title: '', projectId: '', start: null, end: null, progress: 0, priority: 0,
+    id: newId(), title: '', projectId: '', start: null, end: null, progress: 0, done: false, priority: 0,
     notes: '', link: '', color: '', focusDays: [], archivedAt: 0, subtasks: [], order: now, createdAt: now, updatedAt: now, ...fields,
   };
 }
@@ -435,6 +441,7 @@ export function normalize(raw) {
         start: date(t.start),
         end: date(t.end),
         progress: clamp(num(t.progress, 0), 0, 100),
+        done: false, // set below, once the subtasks are in; kept here so keys keep makeTask's order
         priority: clamp(num(t.priority, 0), 0, 3),
         notes: str(t.notes),
         link: /^https?:\/\//i.test(t.link) ? str(t.link, 2000) : '',
@@ -455,7 +462,12 @@ export function normalize(raw) {
         order: num(t.order, now),
         createdAt: num(t.createdAt, now),
         updatedAt: num(t.updatedAt, now),
-      }))
+        rawDone: t.done,
+      })).map(({ rawDone, ...t }) => {
+        // Data from before the explicit flag: what read as 100% then had been checked off.
+        t.done = typeof rawDone === 'boolean' ? rawDone : percent(t) >= 100;
+        return t;
+      })
     : [];
 
   const blocks = Array.isArray(raw.blocks)

@@ -698,7 +698,7 @@ input.bare:focus-visible, textarea:focus-visible { outline: none; }
   flex: 1; min-height: 0; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
   padding: 0 calc(16px + var(--safe-r)) 12px calc(16px + var(--safe-l));
 }
-@media (min-width: 900px) { .day-layout { grid-template-columns: 300px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } }
+@media (min-width: 900px) { .day-layout { grid-template-columns: var(--tray-w, 300px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } }
 .day-tray { display: flex; flex-direction: column; min-height: 0; }
 .tray-head { font-size: 13.5px; font-weight: 600; color: var(--label2); padding: 12px 14px 6px; }
 .tray-list { flex: 1; min-height: 0; overflow-y: auto; }
@@ -793,8 +793,8 @@ input.bare:focus-visible, textarea:focus-visible { outline: none; }
 .cal-head { flex: none; display: flex; position: sticky; top: 0; z-index: 3; background: var(--card); box-shadow: 0 .5px 0 var(--sep); font-size: 12px; font-weight: 600; color: var(--label2); }
 .cal-head-days { flex: 1; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
 .cal-head-days span { padding: 5px 0; }
-.cal-weeks { flex: 1; display: flex; flex-direction: column; }
-.cal-week { flex: 1; display: flex; border-bottom: .5px solid var(--sep); }
+.cal-weeks { display: flex; flex-direction: column; }
+.cal-week { flex: none; display: flex; border-bottom: .5px solid var(--sep); }
 .cal-weeknum { width: 26px; flex: none; text-align: center; font-size: 10.5px; color: var(--label3); padding-top: 7px; border-right: .5px solid var(--sep); font-variant-numeric: tabular-nums; }
 .cal-head .cal-weeknum { padding-top: 6px; }
 .cal-week-body { flex: 1; min-width: 0; position: relative; }
@@ -804,7 +804,11 @@ input.bare:focus-visible, textarea:focus-visible { outline: none; }
 .cal-day:hover { background: var(--fill); }
 .cal-day.weekend { background: var(--sat); }
 .cal-day b { display: inline-block; padding: 0 4px; min-width: 21px; height: 21px; line-height: 21px; text-align: center; border-radius: 11px; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.cal-day.out b { color: var(--label3); }
+/* Months alternate a faint tint so scrolling across a boundary still shows where it is. */
+.cal-day.m-even { background-color: color-mix(in srgb, var(--fill) 55%, transparent); }
+.cal-day.weekend.m-even { background-color: color-mix(in srgb, var(--fill) 55%, var(--sat)); }
+.cal-day.m-first { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--tint) 70%, transparent); }
+.cal-day.m-first b { color: var(--tint); font-weight: 700; padding: 0 6px; }
 .cal-day.is-today b { background: var(--now); color: #fff; font-weight: 700; }
 .cal-more { position: absolute; left: 6px; bottom: 1px; font-size: 10.5px; color: var(--label2); }
 .cal-bars { position: absolute; left: 0; right: 0; top: 28px; bottom: 0; pointer-events: none; overflow: hidden; }
@@ -1074,6 +1078,67 @@ input.bare:focus-visible, textarea:focus-visible { outline: none; }
 .code-box { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto; }
 .gcal-cal-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 input:disabled.bare, textarea:disabled { color: var(--label2); -webkit-text-fill-color: var(--label2); opacity: 1; }
+
+
+/* ---------- Gantt: reordering and the today layer ---------- */
+
+.g-grip {
+  width: 22px; height: 40px; flex: none; display: grid; place-items: center; color: var(--label3); opacity: .45;
+  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.g-grip .ic { width: 14px; height: 14px; }
+.g-row:hover .g-grip { opacity: 1; }
+@media (pointer: coarse) { .g-grip { opacity: .8; width: 26px; } }
+.sub-label .g-grip { margin-left: -22px; }
+.g-row.reordering { opacity: .4; }
+.g-drop {
+  position: absolute; right: 0; height: 2px; z-index: 6; background: var(--tint); border-radius: 2px; pointer-events: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--card) 70%, transparent);
+}
+.g-today-head .g-label, .g-today-row .g-label { background: linear-gradient(color-mix(in srgb, var(--tint) 9%, transparent), color-mix(in srgb, var(--tint) 9%, transparent)), var(--card); }
+.g-today-head, .g-today-row { background: color-mix(in srgb, var(--tint) 5%, transparent); }
+.g-today-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; text-align: left; padding: 4px 0; }
+.g-today-title b { font-size: 14px; font-weight: 700; color: var(--tint); white-space: nowrap; }
+.g-today-title span { font-size: 12px; color: var(--label2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-today-row .g-label { padding-left: 10px; gap: 8px; }
+.g-today-row .check.small { flex: none; }
+.g-today-row .g-title { gap: 0; }
+.g-today-row .g-name { font-size: 13.5px; }
+.g-today-row .g-meta { font-size: 11px; color: var(--label3); overflow: hidden; text-overflow: ellipsis; }
+.g-today-row.is-done .g-name { color: var(--label3); }
+.g-today-row .text-late, .is-sub .text-late { font-size: 11px; font-weight: 600; }
+.g-today-gap { height: 8px; position: relative; border-bottom: 1.5px solid color-mix(in srgb, var(--tint) 35%, transparent); }
+
+/* Subtasks in the month calendar: their task is the category, shown as a darker edge. */
+.cal-bar.is-sub { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--st) 55%, var(--label)), inset 0 0 0 .5px color-mix(in srgb, var(--label) 16%, transparent); }
+.cal-bar.is-sub span { padding-left: 7px; }
+.cal-bar.is-repeat { background: repeating-linear-gradient(90deg, var(--st) 0 10px, color-mix(in srgb, var(--st) 55%, transparent) 10px 14px); }
+.day-sub { padding-left: 46px; gap: 8px; }
+.day-sub .row-main { flex: 1; min-width: 0; }
+.day-sub .row-title { font-size: 14px; color: var(--label2); }
+.day-sub.is-done .row-title { text-decoration: line-through; color: var(--label3); }
+
+/* ---------- Draggable borders ---------- */
+
+.g-scroll-wrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.col-resizer, .row-resizer { touch-action: none; user-select: none; -webkit-user-select: none; }
+.col-resizer { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px; z-index: 8; cursor: col-resize; }
+.col-resizer::after { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; border-radius: 2px; background: transparent; transition: background-color .12s; }
+.col-resizer:hover::after, .col-resizer.active::after { background: var(--tint); }
+.day-layout { position: relative; }
+.day-resizer { left: calc(16px + var(--safe-l) + var(--tray-w, 300px) + 6px); bottom: 12px; }
+@media (max-width: 899px) { .day-resizer { display: none; } }
+/* Under the week's to-do lists; sticks there while the timeline scrolls. */
+.wk-resizer { position: sticky; z-index: 7; height: 0; }
+.wk-resizer::before { content: ""; position: absolute; left: 0; right: 0; top: -7px; height: 14px; cursor: row-resize; }
+.wk-resizer::after {
+  content: ""; position: absolute; left: 50%; top: -2px; width: 44px; height: 4px; margin-left: -22px; border-radius: 3px;
+  background: var(--label3); opacity: .35; transition: opacity .12s, background-color .12s; pointer-events: none;
+}
+.wk-resizer:hover::after, .wk-resizer.active::after { opacity: 1; background: var(--tint); }
+@media (pointer: coarse) { .col-resizer { width: 22px; margin-left: -11px; } .col-resizer::after { left: 10px; background: color-mix(in srgb, var(--label3) 35%, transparent); } .wk-resizer::before { top: -11px; height: 22px; } }
+.is-resizing-x, .is-resizing-x * { cursor: col-resize !important; user-select: none !important; -webkit-user-select: none !important; }
+.is-resizing-y, .is-resizing-y * { cursor: row-resize !important; user-select: none !important; -webkit-user-select: none !important; }
 
 /* ---------- Toast ---------- */
 

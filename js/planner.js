@@ -4,10 +4,10 @@
 import {
   DAY_MINUTES, FREE_BLOCK_COLOR, SLOT, WEEKDAYS, addDays, assignLanes, blockSegments, blocksOn, fmtDuration, fmtMinute,
   fitParentToSubs, inkOn, isImportant, isSubOverdue, makeBlock, makeSub, makeTask, parseMinute, percent, plannedMinutes, setDone, snapMinute,
-  subsForDay, tasksForDay, toDay, todayStr, weekNumber, weekdayIdx,
+  subsForDay, tasksForDay, toDay, todayStr, weekNumber, weekdayIdx, isDone
 } from './core.js';
-import { blockInfo, commit, focusDate, getProject, getTask, state, taskColor, touch } from './store.js';
-import { actions, changes, colorRowHTML, enters, esc, icon, inputs, toast } from './ui.js';
+import { blockInfo, commit, focusDate, getProject, getTask, state, taskColor, touch, prefs, setPref } from './store.js';
+import { actions, changes, colorRowHTML, enters, esc, icon, inputs, resetters, resizers, toast } from './ui.js';
 import { closeSheet, openPanel } from './sheet.js';
 import { headerHTML, planSegHTML, stripHTML } from './views.js';
 import { gantt } from './gantt.js';
@@ -127,7 +127,7 @@ export function renderPlanner(main) {
 
   const dayTasks = tasksForDay(state, iso, today);
   const dayIds = new Set(dayTasks.map((t) => t.id));
-  const others = state.tasks.filter((t) => !t.archivedAt && !dayIds.has(t.id) && percent(t) < 100);
+  const others = state.tasks.filter((t) => !t.archivedAt && !dayIds.has(t.id) && !isDone(t));
   const unplaced = dayTasks.filter((t) => !minutes(t.id, '') && !t.subtasks.some((s) => minutes(t.id, s.id))).length;
   const planned = plannedMinutes(blocks);
 
@@ -198,7 +198,8 @@ export function renderPlanner(main) {
 
   main.innerHTML = `<div class="day-view">
     ${head}
-    <div class="day-layout">
+    <div class="day-layout" ${prefs.dayTrayW > 0 ? `style="--tray-w:${Math.round(prefs.dayTrayW)}px"` : ''}>
+      <div class="col-resizer day-resizer" data-resize="day-tray" title="拖曳調整左欄寬度，點兩下還原" aria-hidden="true"></div>
       <aside class="day-tray card" aria-label="這天的任務">
         <h2 class="tray-head">這天的任務</h2>
         <div class="tray-list">${trayBody}</div>
@@ -241,6 +242,29 @@ function brushLabel(b) {
   return b.title;
 }
 
+/* ---------- The tray's width ---------- */
+
+resizers['day-tray'] = () => {
+  const layoutEl = document.querySelector('.day-layout');
+  const tray = layoutEl?.querySelector('.day-tray');
+  if (!tray || innerWidth < 900) return null;
+  const start = tray.offsetWidth;
+  let w = start;
+  gantt.dragging = true;
+  return {
+    axis: 'x',
+    onMove: (d) => {
+      w = Math.min(Math.round(innerWidth * 0.5), Math.max(200, Math.round(start + d)));
+      layoutEl.style.setProperty('--tray-w', `${w}px`);
+    },
+    onEnd: () => {
+      gantt.dragging = false;
+      setPref({ dayTrayW: w });
+    },
+  };
+};
+resetters['day-tray'] = () => setPref({ dayTrayW: null });
+
 /* ---------- Creating and editing blocks ---------- */
 
 function addBlock(start, end, brush) {
@@ -261,7 +285,7 @@ export function openBlock(id, { isNew = false } = {}) {
     ? `<div class="row form-row"><span class="form-label bs-linked">${esc(info.title)}</span>
         <button type="button" class="text-btn" data-act="open-task" data-id="${esc(linked.id)}">開啟任務</button></div>`
     : `<div class="row form-row"><input id="bs-title" type="text" class="bare" value="${esc(b.title)}" placeholder="時段名稱" data-in="bs-title" data-id="${esc(id)}" aria-label="時段名稱" maxlength="300"></div>`;
-  const taskDone = linked && percent(linked) >= 100;
+  const taskDone = linked && isDone(linked);
   openPanel(`${fmtMinute(b.start)}–${fmtMinute(b.end)}`, `
     <div class="card">${titleRow}</div>
     <div class="card">
@@ -306,7 +330,7 @@ function fileBlockPanel(id) {
   const b = state.blocks.find((x) => x.id === id);
   if (!b) return;
   const title = b.title || '未命名時段';
-  const tasksOf = (pid) => state.tasks.filter((t) => !t.archivedAt && percent(t) < 100 && t.projectId === pid);
+  const tasksOf = (pid) => state.tasks.filter((t) => !t.archivedAt && !isDone(t) && t.projectId === pid);
   const sections = state.projects.map((p) => {
     const tasks = tasksOf(p.id).map((t) => `<button type="button" class="row form-row link-row file-task" data-act="dp-file-to" data-block="${esc(id)}" data-task="${esc(t.id)}">
         <span class="file-sub">成為「${esc(t.title || '未命名任務')}」的子任務</span></button>`).join('');

@@ -27,7 +27,8 @@ test('status edge cases', () => {
   assert.equal(statusOf(task('2026-10-01', '2026-11-01'), TODAY), 'late');
   assert.equal(statusOf(task('2026-10-01', '2026-11-02'), TODAY), 'doing', 'ending today is not overdue');
   assert.equal(statusOf(task('2026-11-03', '2026-11-04'), TODAY), 'todo');
-  assert.equal(statusOf(task('2026-10-01', '2026-11-01', 100), TODAY), 'done', 'finished beats overdue');
+  assert.equal(statusOf({ ...task('2026-10-01', '2026-11-01', 100), done: true }, TODAY), 'done', 'checked off beats overdue');
+  assert.equal(statusOf(task('2026-10-01', '2026-11-01', 100), TODAY), 'late', '100% without checking off is still overdue');
 });
 
 test('date arithmetic crosses month, year and leap day', () => {

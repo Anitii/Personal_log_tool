@@ -1,9 +1,9 @@
 // App shell: navigation, render scheduling, global shortcuts, service worker.
 import { getProject, prefs, requestPersistentStorage, setPref, state, subscribe } from './store.js';
-import { gantt, initGanttDrag, renderGantt, setGanttRender, shouldSuppressClick } from './gantt.js';
+import { gantt, initGanttDrag, initGanttReorder, renderGantt, setGanttRender, shouldSuppressClick } from './gantt.js';
 import { initSheet } from './sheet.js';
 import { initSync, onSyncStatus, syncStatus } from './sync.js';
-import { actions, esc, icon, initDelegation, toast } from './ui.js';
+import { actions, esc, icon, initDelegation, initResizers, toast } from './ui.js';
 import { applyStatusColors, applyTheme, refreshSyncLine, renderSettings, renderTasks, renderToday, setRerender, shell } from './views.js';
 import { initPlannerGestures, planToday, plannerSuppressClick, renderPlanner, setPlannerRender } from './planner.js';
 import { calendarToday, renderCalendar, setCalendarRender } from './calendar.js';
@@ -149,7 +149,7 @@ function init() {
   applyTheme();
   initDelegation({
     beforeClick: (e) => {
-      if (shouldSuppressClick() && e.target.closest('[data-bar]')) return false;
+      if (shouldSuppressClick() && e.target.closest('[data-bar], .gantt-view')) return false;
       if (plannerSuppressClick() && e.target.closest('.day-view')) return false;
       if (weekSuppressClick() && e.target.closest('.wk-view')) return false;
       if (gantt.menuOpen && !e.target.closest('.menu-wrap')) {
@@ -161,9 +161,11 @@ function init() {
   });
   initSheet();
   initGanttDrag();
+  initGanttReorder();
   initPlannerGestures();
   initWeekGestures();
   initPinch();
+  initResizers();
   setRerender(schedule);
   setGanttRender(schedule);
   setPlannerRender(schedule);

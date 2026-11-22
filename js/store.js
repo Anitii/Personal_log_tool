@@ -173,8 +173,13 @@ export function visibleTasks(today = todayStr(), { archived = false } = {}) {
   if (prefs.sort === 'start') {
     list.sort((a, b) => (a.start || '9999').localeCompare(b.start || '9999') || a.order - b.order);
   }
-  // Finished work sinks below what is still open; archived sinks below that.
-  const rank = (t) => (t.archivedAt ? 2 : statusOf(t, today) === 'done' ? 1 : 0);
+  // Overdue work rises to the top; finished work sinks below what is still open, and
+  // archived sinks below that. Within each group the manual (or start-date) order holds.
+  const rank = (t) => {
+    if (t.archivedAt) return 3;
+    const st = statusOf(t, today);
+    return st === 'late' ? 0 : st === 'done' ? 2 : 1;
+  };
   return list.map((t, i) => [t, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([t]) => t);
 }
 
@@ -249,7 +254,7 @@ export function loadSample() {
     makeTask({ title: '更新履歷', projectId: intern, start: at(-6), end: at(-1), progress: 60, priority: 3, order: base + 1 }),
     makeTask({ title: '面試準備', projectId: intern, start: at(4), end: at(10), order: base + 2 }),
     makeTask({ title: '繳交申請表', projectId: school, start: at(2), end: at(2), priority: 1, order: base + 3 }),
-    makeTask({ title: '整理房間', projectId: personal, start: at(-8), end: at(-4), progress: 100, order: base + 4 }),
+    makeTask({ title: '整理房間', projectId: personal, start: at(-8), end: at(-4), progress: 100, done: true, order: base + 4 }),
   ];
   commit((s) => s.tasks.push(...samples), { undo: '已載入範例' });
 }

@@ -37,6 +37,9 @@ export const icon = {
   folder: stroke('<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M12 11.5v5M9.5 14h5"/>'),
   eye: stroke('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>'),
   eyeOff: stroke('<path d="M4 4l16 16M10.3 6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.6 3.4M6.6 7.3C4 9.1 2.5 12 2.5 12S6 18.5 12 18.5c1.7 0 3.2-.5 4.4-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
+  grip: stroke('<circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none"/>'),
+  expandAll: stroke('<path d="M7 9l5-5 5 5M7 15l5 5 5-5"/>', 'stroke-width="2.2"'),
+  collapseAll: stroke('<path d="M7 4l5 5 5-5M7 20l5-5 5 5"/>', 'stroke-width="2.2"'),
   star: stroke('<path d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>'),
   starOn: stroke('<path fill="currentColor" d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>'),
 };
@@ -83,6 +86,51 @@ export function initDelegation({ beforeClick } = {}) {
       e.preventDefault();
       e.target.click();
     }
+  });
+}
+
+/* ---------- Resizable borders ---------- */
+
+// Views register what a border does: resizers[name](el) returns { axis, onMove(delta), onEnd(delta) }
+// for a drag, and resetters[name]() restores the default on double-click.
+export const resizers = {};
+export const resetters = {};
+
+export function initResizers() {
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const el = e.target.closest?.('[data-resize]');
+    if (!el) return;
+    const spec = resizers[el.dataset.resize]?.(el);
+    if (!spec) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = spec.axis === 'x' ? e.clientX : e.clientY;
+    const id = e.pointerId;
+    let delta = 0;
+    el.classList.add('active');
+    document.body.classList.add(spec.axis === 'x' ? 'is-resizing-x' : 'is-resizing-y');
+    const move = (ev) => {
+      if (ev.pointerId !== id) return;
+      delta = (spec.axis === 'x' ? ev.clientX : ev.clientY) - start;
+      spec.onMove(delta);
+    };
+    const end = (ev) => {
+      if (ev.pointerId !== id) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+      el.classList.remove('active');
+      document.body.classList.remove('is-resizing-x', 'is-resizing-y');
+      spec.onEnd(delta);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', end);
+    document.addEventListener('pointercancel', end);
+  }, true); // before the views' own drag handlers see the press
+  document.addEventListener('dblclick', (e) => {
+    const el = e.target.closest?.('[data-resize]');
+    if (el) resetters[el.dataset.resize]?.();
   });
 }
 
