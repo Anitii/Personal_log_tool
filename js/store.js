@@ -100,13 +100,15 @@ export function setPref(patch) {
 }
 
 // Writing to disk is deferred so a tap never waits on serialization.
-export function commit(fn, { undo, also } = {}) {
+// `silent` saves (and syncs) without redrawing: for text being typed in place, where a redraw
+// would only move the caret and the scroll position.
+export function commit(fn, { undo, also, silent = false } = {}) {
   const before = undo ? JSON.stringify(state) : null;
   const result = fn(state);
   clearTimeout(persistTimer);
   persistTimer = setTimeout(persistNow, 200);
   dataListeners.forEach((l) => l());
-  notify();
+  if (!silent) notify();
   if (undo) toast(undo, () => restore(before), '復原', also);
   return result;
 }

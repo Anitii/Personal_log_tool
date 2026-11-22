@@ -3,9 +3,11 @@ import {
   STATUS, WEEKDAYS, clampSubsToParent, fitParentToSubs, fmtRange, isDone, makeSub, makeTask, newId, occursOn, percent, repeatLabel, setDone, statusOf,
   subDoneOn, subStatusOf, todayStr, toggleSubOn,
 } from './core.js';
-import { commit, deleteTask, getTask, state, touch } from './store.js';
+import { commit, deleteTask, getProject, getTask, state, touch } from './store.js';
 import { actions, changes, colorRowHTML, enters, esc, icon, inputs } from './ui.js';
 import { offerFinish } from './views.js';
+import { driveIdFrom, fileBadge } from './project.js';
+import { gcalConnected, googleCall, isOutdatedScript } from './gcal.js';
 
 let current = null; // { id, isNew }
 let panelClose = null;
@@ -65,6 +67,33 @@ function subsHTML(t) {
   }).join('');
 }
 
+// Links and Google Drive files of a task, edited in place inside the sheet.
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function attachHTML(t) {
+  const links = t.links.map((l, i) => `<div class="row form-row sheet-att">
+      <a class="att-main" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${icon.link}<span>${esc(l.title || hostOf(l.url))}</span><small>${esc(hostOf(l.url))}</small></a>
+      <button type="button" class="icon-btn danger" data-act="sheet-link-delete" data-i="${i}" aria-label="移除連結">${icon.x}</button>
+    </div>`).join('');
+  const files = t.files.map((f, i) => `<div class="row form-row sheet-att">
+      <a class="att-main" href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${fileBadge(f.mime)}<span>${esc(f.name || '雲端硬碟檔案')}</span></a>
+      <button type="button" class="icon-btn danger" data-act="sheet-file-delete" data-i="${i}" aria-label="移除檔案">${icon.x}</button>
+    </div>`).join('');
+  return links + files;
+}
+
+function renderAttach() {
+  const t = task();
+  const host = document.getElementById('sheet-attach');
+  if (t && host) host.innerHTML = attachHTML(t);
+}
+
 function renderSubs() {
   const t = task();
   const host = document.getElementById('sheet-subs');
@@ -93,8 +122,6 @@ function refreshMeta() {
     const input = root.querySelector(sel);
     if (input !== document.activeElement) input.value = val || '';
   }
-  root.querySelector('#sheet-link-open').hidden = !t.link;
-  if (t.link) root.querySelector('#sheet-link-open').href = t.link;
 }
 
 export function openTask(id, { isNew = false, focusSub } = {}) {
@@ -153,11 +180,17 @@ export function openTask(id, { isNew = false, focusSub } = {}) {
           <input id="sheet-sub-add" type="text" class="bare" placeholder="新增子任務，把工作拆細" enterkeyhint="done" data-enter="sheet-sub-add" aria-label="新增子任務" maxlength="300"></div>
       </div>
 
-      <h3 class="group-head in-sheet">備註與連結</h3>
+      <h3 class="group-head in-sheet">備註</h3>
       <div class="card">
         <div class="row form-row notes-row"><textarea class="notes-input" rows="3" placeholder="備註" data-in="sheet-notes" aria-label="備註">${esc(t.notes)}</textarea></div>
-        <div class="row form-row"><input type="url" class="bare" inputmode="url" value="${esc(t.link)}" placeholder="連結（https://…）" data-in="sheet-link" aria-label="連結">
-          <a id="sheet-link-open" class="icon-btn" target="_blank" rel="noopener noreferrer" aria-label="開啟連結" hidden>${icon.link}</a></div>
+      </div>
+
+      <h3 class="group-head in-sheet">連結與檔案</h3>
+      <div class="card">
+        <div id="sheet-attach">${attachHTML(t)}</div>
+        <div class="row form-row"><span class="add-mark">${icon.plus}</span>
+          <input type="url" class="bare" inputmode="url" placeholder="貼上網址或雲端硬碟檔案連結，按 Enter" enterkeyhint="done" data-enter="sheet-attach-add" aria-label="新增連結或檔案"></div>
+        ${gcalConnected() && getProject(t.projectId)?.drive.folderId ? '<button type="button" class="row form-row link-row" data-act="sheet-file-pick">從專案資料夾選檔案</button>' : ''}
       </div>
 
       <div class="card">
@@ -225,6 +258,27 @@ export function closeSheet() {
 const findSub = (el) => task()?.subtasks.find((s) => s.id === el.dataset.sid);
 
 Object.assign(actions, {
+  'sheet-link-delete': (el) => {
+    save((t) => {
+      t.links.splice(Number(el.dataset.i), 1);
+      t.link = t.links[0]?.url || '';
+    });
+    renderAttach();
+  },
+  'sheet-file-delete': (el) => {
+    save((t) => t.files.splice(Number(el.dataset.i), 1));
+    renderAttach();
+  },
+  'sheet-file-pick': () => pickFromFolder(),
+  'sheet-file-choose': (el) => {
+    const t = getTask(el.dataset.task);
+    if (!t) return;
+    commit(() => {
+      if (!t.files.some((f) => f.id === el.dataset.id)) t.files.push({ id: el.dataset.id, name: el.dataset.name, url: el.dataset.url, mime: el.dataset.mime });
+      touch(t);
+    });
+    openTask(t.id);
+  },
   'sheet-close': closeSheet,
   'sheet-priority': (el) => {
     save((t) => (t.priority = Number(el.dataset.v)));
@@ -315,10 +369,6 @@ Object.assign(inputs, {
   },
   'sheet-progress': (el) => save((t) => (t.progress = Number(el.value))),
   'sheet-notes': (el) => save((t) => (t.notes = el.value)),
-  'sheet-link': (el) => save((t) => {
-    const v = el.value.trim();
-    t.link = /^https?:\/\//i.test(v) ? v : '';
-  }),
   'sheet-sub-title': (el) => {
     const s = findSub(el);
     if (s) save(() => (s.title = el.value));
@@ -328,6 +378,49 @@ Object.assign(inputs, {
     if (s) save(() => (s.notes = el.value));
   },
 });
+
+// Drive file links become attachments (with the file's real name); anything else a link.
+async function addAttachment(text) {
+  const t = task();
+  if (!t) return;
+  let url = text.trim();
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  const id = /(?:docs|drive)\.google\.com/.test(url) ? driveIdFrom(url) : '';
+  if (id && gcalConnected()) {
+    try {
+      const f = await googleCall('driveFile', { id });
+      save((x) => x.files.push({ id: f.id, name: f.name, url: f.url, mime: f.mime }));
+      renderAttach();
+      return;
+    } catch { /* not readable as a Drive file: keep it as a plain link */ }
+  }
+  save((x) => {
+    x.links.push({ url, title: '' });
+    x.link = x.links[0].url;
+  });
+  renderAttach();
+}
+
+// A picker over the project's Drive folder; choosing a file attaches it and returns to the task.
+async function pickFromFolder() {
+  const t = task();
+  const project = t && getProject(t.projectId);
+  if (!project?.drive.folderId) return;
+  const taskId = t.id;
+  openPanel('從專案資料夾選檔案', '<p class="tray-empty">讀取中…</p>', { onClose: () => setTimeout(() => getTask(taskId) && !sheet().open && openTask(taskId), 400) });
+  try {
+    const list = (await googleCall('driveList', { id: project.drive.folderId })).filter((f) => !f.mime.endsWith('folder'));
+    const have = new Set(getTask(taskId)?.files.map((f) => f.id));
+    const rows = list.map((f) => `<button type="button" class="row form-row link-row sheet-pick ${have.has(f.id) ? 'is-done' : ''}" data-act="sheet-file-choose" data-task="${esc(taskId)}" data-id="${esc(f.id)}" data-name="${esc(f.name)}" data-url="${esc(f.url)}" data-mime="${esc(f.mime)}" ${have.has(f.id) ? 'disabled' : ''}>
+        ${fileBadge(f.mime)}<span>${esc(f.name)}</span>${have.has(f.id) ? '<small>已附加</small>' : ''}</button>`).join('');
+    const scroll = sheet().querySelector('.sheet-scroll');
+    if (scroll) scroll.innerHTML = `<div class="card">${rows || '<p class="tray-empty">資料夾裡沒有檔案。</p>'}</div>`;
+  } catch (err) {
+    const scroll = sheet().querySelector('.sheet-scroll');
+    if (scroll) scroll.innerHTML = `<p class="tray-empty text-late">${isOutdatedScript(err) ? '要先更新 Apps Script（設定 → Google 日曆）才能讀取雲端硬碟。' : '暫時無法讀取資料夾。'}</p>`;
+  }
+}
 
 Object.assign(changes, {
   'sheet-done': (el) => {
@@ -396,6 +489,11 @@ Object.assign(changes, {
 });
 
 Object.assign(enters, {
+  'sheet-attach-add': (el) => {
+    const v = el.value;
+    el.value = '';
+    addAttachment(v);
+  },
   'sheet-title-enter': (el) => {
     el.blur();
     if (current?.isNew) sheet().querySelector('#sheet-sub-add')?.focus();

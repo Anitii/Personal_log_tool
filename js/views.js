@@ -3,7 +3,7 @@ import {
   DAY_MINUTES, DEFAULT_STATUS_COLORS, FREE_BLOCK_COLOR, PALETTE, STATUS, WEEKDAYS, addDays, blocksOn, deferTask, fitParentToSubs, fmtDuration,
   allSubsDone, fmtMinute, fmtRange, fromDay, inkOn, isActiveOn, isDone, isImportant, makeSub, mondayOf, moveProject, newId, normalize, percent, plannedMinutes, setDone,
   isSubOverdue, occursOn, repeatLabel, statusOf, subDoneOn, subStatusOf, subsForDay, tasksForDay, toCSV, toDay, todayStr, toggleFocusDay,
-  toggleSubOn, weekNumber, weekdayIdx,
+  toggleSubOn, weekNumber, weekdayIdx, makeProject,
 } from './core.js';
 import { plainPreview } from './markdown.js';
 import {
@@ -105,7 +105,7 @@ export function subRow(t, s, today, iso = today) {
   </div>`;
 }
 
-function taskRow(t, today, { subs = t.subtasks, expandable = true, showAdd = false, star = null, meta = '' } = {}) {
+export function taskRow(t, today, { subs = t.subtasks, expandable = true, showAdd = false, star = null, meta = '' } = {}) {
   const st = statusOf(t, today);
   const pct = percent(t);
   const project = getProject(t.projectId);
@@ -343,7 +343,7 @@ export function renderTasks() {
     groups = [...byWeek].map(([title, items]) => ({ title, items }));
   } else {
     groups = state.projects.map((p) => ({
-      title: `<i class="dot" style="background:${esc(p.color)}"></i>${esc(p.name)}`,
+      title: `<button type="button" class="group-link" data-act="open-project" data-id="${esc(p.id)}" title="開啟專案頁"><i class="dot" style="background:${esc(p.color)}"></i>${esc(p.name)}${icon.chevR}</button>`,
       items: list.filter((t) => t.projectId === p.id),
     }));
     groups.push({ title: '未分類', items: list.filter((t) => !t.projectId || !getProject(t.projectId)) });
@@ -438,6 +438,7 @@ export function renderSettings() {
   const projects = state.projects.map((p, i) => `<div class="row form-row">
       <button type="button" class="swatch" style="background:${esc(p.color)}" data-act="toggle-color" data-id="${esc(p.id)}" aria-expanded="${shell.colorOpen === p.id}" aria-label="更換 ${esc(p.name)} 的顏色"></button>
       <input type="text" class="bare" value="${esc(p.name)}" data-in="project-name" data-id="${esc(p.id)}" data-keep="project-${esc(p.id)}" aria-label="專案名稱" maxlength="60">
+      <button type="button" class="icon-btn" data-act="open-project" data-id="${esc(p.id)}" aria-label="開啟 ${esc(p.name)} 的專案頁" title="開啟專案頁">${icon.folder}</button>
       <button type="button" class="icon-btn" data-act="move-project" data-id="${esc(p.id)}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="把 ${esc(p.name)} 上移">${icon.up}</button>
       <button type="button" class="icon-btn" data-act="move-project" data-id="${esc(p.id)}" data-dir="1" ${i === state.projects.length - 1 ? 'disabled' : ''} aria-label="把 ${esc(p.name)} 下移">${icon.down}</button>
       <button type="button" class="icon-btn danger" data-act="delete-project" data-id="${esc(p.id)}" aria-label="刪除專案 ${esc(p.name)}">${icon.trash}</button>
@@ -794,7 +795,7 @@ Object.assign(enters, {
   'add-project': (el) => quickAdd(el, (name) => {
     commit((s) => {
       const order = Math.max(-1, ...s.projects.map((p) => p.order)) + 1;
-      s.projects.push({ id: newId(), name, color: PALETTE[s.projects.length % PALETTE.length], order, updatedAt: Date.now() });
+      s.projects.push(makeProject({ name, color: PALETTE[s.projects.length % PALETTE.length], order }));
     });
   }),
   'sync-on': () => actions['sync-on'](),

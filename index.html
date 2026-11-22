@@ -29,6 +29,7 @@
   <link rel="modulepreload" href="js/pinch.js">
   <link rel="modulepreload" href="js/week.js">
   <link rel="modulepreload" href="js/gcal.js">
+  <link rel="modulepreload" href="js/project.js">
   <script>
     // Set the theme before first paint so dark mode never flashes white.
     try {
@@ -59,7 +60,15 @@
           var jobs = [];
           if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
           if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k.indexOf('daily-gantt-') === 0; }).map(function (k) { return caches.delete(k); })); }));
-          Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+          // The browser's own HTTP cache can hold old copies too: fetch every script and the
+          // stylesheet past it, which replaces what it stored.
+          var urls = ['js/main.js', 'css/app.css'];
+          document.querySelectorAll('link[rel="modulepreload"]').forEach(function (l) { urls.push(l.getAttribute('href')); });
+          // Only after the offline copy is gone, or the old worker would answer from it.
+          var refetch = function () { return Promise.all(urls.map(function (u) { return fetch(u, { cache: 'reload' }).catch(function () {}); })); };
+          this.disabled = true;
+          this.textContent = '重新載入中…';
+          Promise.all(jobs).catch(function () {}).then(refetch).then(function () { location.reload(); });
         };
         document.body.appendChild(box);
       }, 5000);

@@ -124,7 +124,7 @@ export function pendingKey() {
 // The whole script the user pastes into script.google.com. It is a thin relay to the
 // Calendar API's advanced service, so events come back in the same shape as the API's.
 export function scriptCode(key) {
-  return `// 日常甘特 ↔ Google 日曆
+  return `// 日常甘特 ↔ Google 日曆與雲端硬碟
 // 1. 左側「服務」按 +，加入「Google Calendar API」。
 // 2. 部署 → 新增部署 → 類型「網頁應用程式」，執行身分「我」，存取權「所有人」。
 // 3. 把部署後的網址貼回日常甘特的「設定 → Google 日曆」。
@@ -167,8 +167,60 @@ function run(req) {
     case 'patch': return Calendar.Events.patch(req.body, req.calendarId, req.eventId);
     case 'insert': return Calendar.Events.insert(req.body, req.calendarId);
     case 'remove': Calendar.Events.remove(req.calendarId, req.eventId); return null;
+    // Google Drive: a project's folder, its files, new documents and the notes document.
+    case 'driveFolder': return folderInfo(DriveApp.getFolderById(req.id));
+    case 'driveNewFolder': return folderInfo(DriveApp.createFolder(req.name));
+    case 'driveList': {
+      const folder = DriveApp.getFolderById(req.id);
+      const out = [];
+      const subs = folder.getFolders();
+      while (subs.hasNext() && out.length < 200) out.push(folderInfo(subs.next()));
+      const files = folder.getFiles();
+      while (files.hasNext() && out.length < 500) {
+        const f = files.next();
+        if (!f.isTrashed()) out.push(fileInfo(f));
+      }
+      return out;
+    }
+    case 'driveFile': return fileInfo(DriveApp.getFileById(req.id));
+    case 'driveCreate': {
+      const makers = {
+        doc: function (n) { return DocumentApp.create(n).getId(); },
+        sheet: function (n) { return SpreadsheetApp.create(n).getId(); },
+        slide: function (n) { return SlidesApp.create(n).getId(); },
+      };
+      const file = DriveApp.getFileById(makers[req.kind](req.name));
+      if (req.folderId) file.moveTo(DriveApp.getFolderById(req.folderId));
+      return fileInfo(file);
+    }
+    case 'noteRead': {
+      const file = DriveApp.getFileById(req.id);
+      if (file.isTrashed()) throw new Error('Not Found');
+      return { id: req.id, url: file.getUrl(), updated: file.getLastUpdated().getTime(), text: DocumentApp.openById(req.id).getBody().getText() };
+    }
+    case 'noteWrite': {
+      let id = req.id;
+      if (!id) {
+        id = DocumentApp.create(req.name).getId();
+        if (req.folderId) DriveApp.getFileById(id).moveTo(DriveApp.getFolderById(req.folderId));
+      }
+      const doc = DocumentApp.openById(id);
+      doc.getBody().setText(req.text);
+      doc.saveAndClose();
+      const file = DriveApp.getFileById(id);
+      return { id: id, url: file.getUrl(), updated: file.getLastUpdated().getTime() };
+    }
+    case 'version': return 2;
   }
   throw new Error('unknown action');
+}
+
+function folderInfo(f) {
+  return { id: f.getId(), name: f.getName(), url: f.getUrl(), mime: 'application/vnd.google-apps.folder', updated: f.getLastUpdated().getTime() };
+}
+
+function fileInfo(f) {
+  return { id: f.getId(), name: f.getName(), url: f.getUrl(), mime: f.getMimeType(), updated: f.getLastUpdated().getTime() };
 }
 
 function doGet() {
@@ -234,6 +286,14 @@ export function disconnect() {
 }
 
 /* ---------- API ---------- */
+
+// The script version the page expects: a script deployed before Drive support answers
+// Drive requests with "unknown action" and has to be updated (see projectScriptOutdated).
+export const SCRIPT_VERSION = 2;
+export const isOutdatedScript = (err) => /unknown action/i.test(err?.detail || err?.message || '');
+
+// For other modules (the project page's Drive panel) to reach the same script.
+export const googleCall = (action, params) => call(action, params);
 
 // Every request is a POST of plain text, which needs no CORS preflight; the key travels in
 // the body, never in the address.

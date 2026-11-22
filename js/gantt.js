@@ -45,7 +45,7 @@ function layout() {
   const wantDetail = canDetail && !prefs.compact;
   const labelW = Number.isFinite(custom) && custom > 0
     ? Math.min(maxLabelW(), Math.max(90, custom))
-    : wantDetail ? 500 : phone ? 136 : 228;
+    : wantDetail ? 500 : phone ? 156 : 228;
   return {
     phone,
     canDetail,
@@ -96,22 +96,30 @@ function barColorStyle(t) {
   return c ? `--st:${esc(c)};--ink:${inkOn(c)};` : '';
 }
 
+// Rough rendered width of a label: CJK glyphs are about one em wide, Latin about 0.6 em.
+const textWidth = (str, px) => [...String(str)].reduce((w, c) => w + (c.charCodeAt(0) > 0x2e80 ? px : px * 0.6), 0);
+
+// Every bar carries its name, so nobody has to look back at the left column: inside the bar
+// when it fits, otherwise just to its right. Inside labels slide along while the bar's start
+// is scrolled out of view (see syncBarLabels).
 function barHTML({ taskId, subId, title, start, end, st, pct, isSub, range: rangeLabel, colorStyle = '', still = false }) {
   const s = toDay(start);
   const e = toDay(end);
+  const name = title || (subId ? '未命名子任務' : '未命名任務');
   const common = `${still ? '' : 'data-bar'} data-act="open-task" data-id="${esc(taskId)}" ${subId ? `data-sub="${esc(subId)}" data-focus-sub="${esc(subId)}"` : ''} role="button" tabindex="0"
-    aria-label="${esc(title)}，${esc(rangeLabel)}，${esc(STATUS[st].label)}"`;
+    aria-label="${esc(name)}，${esc(rangeLabel)}，${esc(STATUS[st].label)}"`;
+  const out = (left) => `<span class="bar-out ${isSub ? 'is-sub' : ''} ${st === 'done' ? 'is-done' : ''}" style="left:${left}px" aria-hidden="true">${esc(name)}</span>`;
   if (s === e) {
     const size = isSub ? 13 : 17;
     const left = (s - view.start) * view.dayW + view.dayW / 2 - size / 2;
-    return `<div class="bar diamond s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="${colorStyle}left:${left}px;width:${size}px;height:${size}px" ${common}></div>`;
+    return `<div class="bar diamond s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="${colorStyle}left:${left}px;width:${size}px;height:${size}px" ${common}></div>${out(left + size + 7)}`;
   }
   const g = barGeom(s, e);
-  const fits = !isSub && g.width > title.length * 13 + 18;
+  const fits = g.width > textWidth(name, isSub ? 11.5 : 12.5) + 20;
   return `<div class="bar s-${STATUS[st].cls} ${isSub ? 'is-sub' : ''}" style="${colorStyle}left:${g.left}px;width:${g.width}px" ${common}>
     ${pct > 0 && pct < 100 ? `<i class="bar-fill" style="width:${pct}%"></i>` : ''}
-    ${fits ? `<span class="bar-text">${esc(title)}</span>` : ''}
-  </div>`;
+    ${fits ? `<span class="bar-text">${esc(name)}</span>` : ''}
+  </div>${fits ? '' : out(g.left + g.width + 6)}`;
 }
 
 function repeatHTML(t, s, colorStyle) {
@@ -149,7 +157,7 @@ function labelHTML(t, st, pct, l) {
        <span class="g-col c-num">${pct}%</span>
        <span class="g-col c-status"><span class="pill s-${STATUS[st].cls}">${esc(STATUS[st].label)}</span></span>`
     : '';
-  return `<div class="g-label">${gripHTML(`data-id="${esc(t.id)}"`)}${twisty}${main}${cols}</div>`;
+  return `<div class="g-label">${gripHTML(`data-id="${esc(t.id)}"`) || '<span class="g-grip-gap"></span>'}${twisty}${main}${cols}</div>`;
 }
 
 // The layer above everything: what today holds, across all tasks. A task with subtasks
@@ -321,26 +329,26 @@ export function renderGantt(main) {
     const st = statusOf(t, todayIso);
     const pct = percent(t);
     const dated = t.start && t.end && t.end >= t.start;
-    rows.push(`<div class="g-row is-task ${t.archivedAt ? 'is-archived' : ''}" style="height:${ROW_H}px" data-task="${esc(t.id)}">
+    rows.push(`<div class="g-row is-task ${t.archivedAt ? 'is-archived' : ''} ${st === 'done' ? 'is-done-row' : ''}" style="height:${ROW_H}px" data-task="${esc(t.id)}">
       ${labelHTML(t, st, pct, l)}
       <div class="g-track" style="width:${tw}px" ${dated ? '' : `data-act="gantt-set-date" data-id="${esc(t.id)}"`}>
         ${dated ? barHTML({ taskId: t.id, title: t.title, start: t.start, end: t.end, st, pct, range: fmtRange(t.start, t.end), colorStyle: barColorStyle(t) }) : `<span class="g-hint" style="left:${(today - r.start) * l.dayW + 6}px">${t.start || t.end ? '日期有誤，點此重設' : '點時間軸設定日期'}</span>`}
       </div>
     </div>`);
     if (t.subtasks.length && !prefs.collapsed[t.id]) {
-      for (const s of t.subtasks) {
+      t.subtasks.forEach((s, si) => {
         const sst = subStatusOf(s, todayIso, t);
         const late = isSubOverdue(s, todayIso);
         const sDated = s.start && s.end && s.end >= s.start;
         const track = s.repeat
           ? repeatHTML(t, s, barColorStyle(t))
           : sDated ? barHTML({ taskId: t.id, subId: s.id, title: s.title, start: s.start, end: s.end, st: sst, pct: 0, isSub: true, range: fmtRange(s.start, s.end), colorStyle: barColorStyle(t) }) : '';
-        rows.push(`<div class="g-row is-sub" style="height:${SUB_H}px" data-parent="${esc(t.id)}" data-sub-row="${esc(s.id)}">
-          <div class="g-label sub-label">${gripHTML(`data-id="${esc(t.id)}" data-sub="${esc(s.id)}"`)}<button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
-            <span class="g-name ${sst === 'done' ? 'struck' : ''}">${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}${late ? ' <span class="text-late">逾期</span>' : ''}</span></button></div>
+        rows.push(`<div class="g-row is-sub ${si === t.subtasks.length - 1 ? 'is-last' : ''}" style="height:${SUB_H}px" data-parent="${esc(t.id)}" data-sub-row="${esc(s.id)}">
+          <div class="g-label sub-label">${gripHTML(`data-id="${esc(t.id)}" data-sub="${esc(s.id)}"`) || '<span class="g-grip-gap"></span>'}<span class="g-tree" aria-hidden="true"></span><button type="button" class="g-title" data-act="open-task" data-id="${esc(t.id)}" data-focus-sub="${esc(s.id)}">
+            <span class="g-name ${sst === 'done' ? 'struck' : ''}"><i class="sub-bullet ${sst === 'done' ? 'on' : ''}"></i>${s.repeat ? '<span class="repeat-mark">↻</span> ' : ''}${esc(s.title) || '<em>未命名子任務</em>'}${late ? ' <span class="text-late">逾期</span>' : ''}</span></button></div>
           <div class="g-track" style="width:${tw}px">${track}</div>
         </div>`);
-      }
+      });
     }
   }
 
@@ -383,11 +391,38 @@ export function renderGantt(main) {
   scroller.scrollLeft = (gantt.anchor - r.start) * l.dayW;
   scroller.scrollTop = gantt.scrollTop;
   scroller.addEventListener('scroll', onScroll, { passive: true });
+  syncBarLabels(scroller);
 }
 
 let extending = false;
+// A bar whose start is scrolled off the left keeps its name at the visible edge.
+let labelRaf = 0;
+function syncBarLabels(scroller) {
+  const visible = scroller.scrollLeft; // the timeline starts right after the sticky task column
+  for (const text of scroller.querySelectorAll('.bar .bar-text')) {
+    const bar = text.parentElement;
+    const left = parseFloat(bar.style.left) || 0;
+    const shift = Math.max(0, Math.min(visible - left, bar.offsetWidth));
+    const remaining = bar.offsetWidth - shift - 4;
+    text.style.transform = shift ? `translateX(${shift}px)` : '';
+    // What is left of the bar may be shorter than the name: shorten it, or drop it if tiny.
+    text.style.maxWidth = shift ? `${Math.max(0, remaining)}px` : '';
+    text.style.visibility = shift && remaining < 26 ? 'hidden' : '';
+  }
+  // A name beside a bar that has scrolled away would point at nothing.
+  for (const out of scroller.querySelectorAll('.bar-out')) {
+    out.style.visibility = (parseFloat(out.style.left) || 0) < visible + 2 ? 'hidden' : '';
+  }
+}
+
 function onScroll(e) {
   const el = e.currentTarget;
+  if (!labelRaf) {
+    labelRaf = requestAnimationFrame(() => {
+      labelRaf = 0;
+      syncBarLabels(el);
+    });
+  }
   if (gantt.dragging || !view) return;
   gantt.anchor = view.start + el.scrollLeft / view.dayW;
   gantt.scrollTop = el.scrollTop;
@@ -515,6 +550,10 @@ function beginDrag() {
   drag.active = true;
   gantt.dragging = true;
   drag.el.classList.add('dragging');
+  // Outside labels stay put while the bar moves; hide them until the re-render places them.
+  for (const el of [drag.el, ...drag.children.map((c) => c.el)]) {
+    if (el.nextElementSibling?.classList.contains('bar-out')) el.nextElementSibling.style.visibility = 'hidden';
+  }
   document.body.classList.add('is-dragging');
   if (drag.pointerType === 'touch') navigator.vibrate?.(8);
   const tip = document.createElement('div');

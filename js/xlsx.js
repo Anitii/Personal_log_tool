@@ -1,6 +1,6 @@
 // Minimal .xlsx reader, using only browser built-ins (DecompressionStream, DOMParser).
 // Reads the 每週總覽 layout of the Excel template by header name, not by fixed column.
-import { PALETTE, fromDay, makeTask, newId, toDay } from './core.js';
+import { PALETTE, fromDay, makeTask, newId, toDay, makeProject } from './core.js';
 import { commit, state } from './store.js';
 
 const EXCEL_EPOCH_OFFSET = 25569; // Excel serial of 1970-01-01
@@ -154,7 +154,7 @@ export function applyWorkbook(parsed) {
         if (!name) return '';
         let p = s.projects.find((x) => x.name === name);
         if (!p) {
-          p = { id: newId(), name, color: PALETTE[s.projects.length % PALETTE.length], order: Math.max(-1, ...s.projects.map((x) => x.order)) + 1, updatedAt: now };
+          p = makeProject({ name, color: PALETTE[s.projects.length % PALETTE.length], order: Math.max(-1, ...s.projects.map((x) => x.order)) + 1, updatedAt: now });
           s.projects.push(p);
         }
         return p.id;

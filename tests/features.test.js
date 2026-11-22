@@ -23,7 +23,9 @@ test('upgrading version 1 data keeps every task and only softens the old colors'
     deleted: { gone: 11 },
   };
   const s = normalize(JSON.parse(JSON.stringify(v1)));
-  const { color, focusDays, archivedAt, done, ...task } = s.tasks[0];
+  const { color, focusDays, archivedAt, done, links, files, ...task } = s.tasks[0];
+  assert.deepEqual(links, [{ url: 'https://example.com', title: '' }], 'the old single link becomes the first link');
+  assert.deepEqual(files, []);
   task.subtasks = task.subtasks.map(({ repeat, repeatDays, repeatEvery, doneDays, ...sub }) => {
     assert.equal(repeat, '', 'old subtasks do not repeat');
     assert.deepEqual(doneDays, []);
@@ -359,4 +361,33 @@ test('old data: what read as finished stays finished', () => {
   const done = Object.fromEntries(s.tasks.map((t) => [t.id, t.done]));
   assert.deepEqual(done, { full: true, subs: true, half: false, flag: false }, 'an explicit flag wins over the old 100% rule');
   assert.equal(sameDocument(s, normalize(JSON.parse(JSON.stringify(s)))), true, 'normalizing twice changes nothing');
+});
+
+test('projects keep their workspace fields, and junk is dropped', async () => {
+  const { makeProject, makeMilestone } = await import('../js/core.js');
+  const p = makeProject({ name: '學校', goal: '拿到 A', deadline: '2026-12-20' });
+  p.links.push({ url: 'https://moodle.example.edu', title: '課程網站' }, { url: 'javascript:alert(1)', title: 'bad' });
+  p.milestones.push(makeMilestone({ title: '期中', date: '2026-11-27' }));
+  p.drive.folderId = 'F1folder000001';
+  const s = normalize({ version: 2, projects: [p], tasks: [] });
+  const q = s.projects[0];
+  assert.equal(q.goal, '拿到 A');
+  assert.equal(q.deadline, '2026-12-20');
+  assert.deepEqual(q.links, [{ url: 'https://moodle.example.edu', title: '課程網站' }], 'only http(s) links survive');
+  assert.equal(q.milestones[0].title, '期中');
+  assert.equal(q.drive.folderId, 'F1folder000001');
+  assert.equal(sameDocument(s, normalize(JSON.parse(JSON.stringify(s)))), true, 'normalizing twice changes nothing');
+  const fresh = normalize({ version: 2, projects: [{ id: 'old', name: '舊專案', color: '#FFFFFF', order: 0 }] });
+  assert.deepEqual(fresh.projects[0].milestones, [], 'projects from before get empty workspaces');
+  assert.equal(fresh.projects[0].drive.folderId, '');
+});
+
+test('tasks hold several links and Drive files', () => {
+  const t = makeTask({ title: 'x' });
+  t.links.push({ url: 'https://a.example', title: '' });
+  t.files.push({ id: 'file0000000001', name: '大綱', url: 'https://docs.google.com/document/d/file0000000001', mime: 'application/vnd.google-apps.document' });
+  const s = normalize({ version: 2, tasks: [t] });
+  assert.equal(s.tasks[0].links.length, 1);
+  assert.equal(s.tasks[0].files[0].name, '大綱');
+  assert.equal(s.tasks[0].link, 'https://a.example', 'older copies of the app still see the first link');
 });

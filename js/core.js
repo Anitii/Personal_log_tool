@@ -382,7 +382,7 @@ export function makeTask(fields = {}) {
   const now = Date.now();
   return {
     id: newId(), title: '', projectId: '', start: null, end: null, progress: 0, done: false, priority: 0,
-    notes: '', link: '', color: '', focusDays: [], archivedAt: 0, subtasks: [], order: now, createdAt: now, updatedAt: now, ...fields,
+    notes: '', link: '', links: [], files: [], color: '', focusDays: [], archivedAt: 0, subtasks: [], order: now, createdAt: now, updatedAt: now, ...fields,
   };
 }
 
@@ -391,10 +391,21 @@ export const makeSub = (fields = {}) => ({
 });
 
 // Defaults carry timestamp 0 so a new device's first sync can never overwrite real edits.
+// A project is also a workspace: a goal, a deadline, links, milestones, inspiration notes
+// and, optionally, a Google Drive folder with a notes document in it.
+export function makeProject(fields = {}) {
+  return {
+    id: newId(), name: '', color: PALETTE[0], order: 0, goal: '', deadline: null, links: [], milestones: [], notes: '',
+    drive: { folderId: '', folderName: '', folderUrl: '', docId: '', docUrl: '', docSyncedAt: 0 }, updatedAt: Date.now(), ...fields,
+  };
+}
+
+export const makeMilestone = (fields = {}) => ({ id: newId(), title: '', date: null, done: false, ...fields });
+
 export function defaultState() {
   return {
     version: DATA_VERSION,
-    projects: ['實習', '學校', '活動', '個人事項', '其他'].map((name, i) => ({
+    projects: ['實習', '學校', '活動', '個人事項', '其他'].map((name, i) => makeProject({
       id: `p${i + 1}`, name, color: PALETTE[i], order: i, updatedAt: 0,
     })),
     tasks: [],
@@ -406,6 +417,16 @@ export function defaultState() {
 }
 
 const str = (v, max = 5000) => (typeof v === 'string' ? v.slice(0, max) : '');
+const httpUrl = (v) => (typeof v === 'string' && /^https?:\/\//i.test(v) ? v.slice(0, 2000) : '');
+const driveId = (v) => (typeof v === 'string' && /^[\w-]{10,200}$/.test(v) ? v : '');
+// Links are { url, title }; anything that isn't an http(s) address is dropped.
+const links = (list) => (Array.isArray(list)
+  ? list.filter((l) => l && httpUrl(l.url)).slice(0, 100).map((l) => ({ url: httpUrl(l.url), title: str(l.title, 200) }))
+  : []);
+// Google Drive files attached to a task.
+const files = (list) => (Array.isArray(list)
+  ? list.filter((f) => f && driveId(f.id)).slice(0, 100).map((f) => ({ id: f.id, name: str(f.name, 300), url: httpUrl(f.url), mime: str(f.mime, 120) }))
+  : []);
 const date = (v) => (isDate(v) ? v : null);
 const num = (v, fallback) => (Number.isFinite(v) ? v : fallback);
 const validId = (v) => typeof v === 'string' && v.length > 0 && v.length < 64;
@@ -429,6 +450,21 @@ export function normalize(raw) {
         name: str(p.name, 60) || '未命名',
         color: isHex(p.color) ? upgradeColor(p.color) : PALETTE[i % PALETTE.length],
         order: num(p.order, i), // before projects had an order, their position was it
+        goal: str(p.goal, 5000),
+        deadline: date(p.deadline),
+        links: links(p.links),
+        milestones: Array.isArray(p.milestones)
+          ? p.milestones.filter((m) => m && validId(m.id)).map((m) => ({ id: m.id, title: str(m.title, 300), date: date(m.date), done: m.done === true }))
+          : [],
+        notes: str(p.notes, 200000),
+        drive: {
+          folderId: driveId(p.drive?.folderId),
+          folderName: str(p.drive?.folderName, 300),
+          folderUrl: httpUrl(p.drive?.folderUrl),
+          docId: driveId(p.drive?.docId),
+          docUrl: httpUrl(p.drive?.docUrl),
+          docSyncedAt: num(p.drive?.docSyncedAt, 0),
+        },
         updatedAt: num(p.updatedAt, now),
       })).sort(byOrder)
     : base.projects;
@@ -444,7 +480,9 @@ export function normalize(raw) {
         done: false, // set below, once the subtasks are in; kept here so keys keep makeTask's order
         priority: clamp(num(t.priority, 0), 0, 3),
         notes: str(t.notes),
-        link: /^https?:\/\//i.test(t.link) ? str(t.link, 2000) : '',
+        link: '', // superseded by links; kept (as the first link) for older copies of the app
+        links: Array.isArray(t.links) ? links(t.links) : httpUrl(t.link) ? [{ url: httpUrl(t.link), title: '' }] : [],
+        files: files(t.files),
         color: hex(t.color),
         focusDays: Array.isArray(t.focusDays) ? [...new Set(t.focusDays.filter(isDate))] : [],
         archivedAt: num(t.archivedAt, 0),
@@ -466,6 +504,7 @@ export function normalize(raw) {
       })).map(({ rawDone, ...t }) => {
         // Data from before the explicit flag: what read as 100% then had been checked off.
         t.done = typeof rawDone === 'boolean' ? rawDone : percent(t) >= 100;
+        t.link = t.links[0]?.url || '';
         return t;
       })
     : [];

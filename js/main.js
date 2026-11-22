@@ -11,6 +11,7 @@ import { renderDiary, setDiaryRender } from './diary.js';
 import { initWeekGestures, renderWeek, setWeekRender, weekSuppressClick, weekToday } from './week.js';
 import { initPinch } from './pinch.js';
 import { setGcalRender } from './gcal.js';
+import { openProject, renderProject, setProjectRender } from './project.js';
 
 const main = document.getElementById('main');
 const sidebar = document.getElementById('sidebar');
@@ -32,7 +33,7 @@ function navButtons(cls) {
 function renderChrome() {
   const projects = state.projects.map((p) => {
     const count = state.tasks.filter((t) => !t.archivedAt && t.projectId === p.id).length;
-    const on = prefs.project === p.id;
+    const on = prefs.view === 'project' && prefs.projectPage === p.id;
     return `<button type="button" class="side-project ${on ? 'on' : ''}" data-act="side-project" data-id="${esc(p.id)}" aria-pressed="${on}">
       <i class="dot" style="background:${esc(p.color)}"></i><span>${esc(p.name)}</span><small>${count}</small></button>`;
   }).join('');
@@ -75,6 +76,7 @@ function render() {
       else renderGantt(main);
       break;
     case 'diary': renderDiary(main); break;
+    case 'project': renderProject(main); break;
     case 'tasks': main.innerHTML = renderTasks(); break;
     case 'settings': main.innerHTML = renderSettings(); break;
     default: main.innerHTML = renderToday();
@@ -140,6 +142,10 @@ Object.assign(actions, {
   },
   'side-project': (el) => {
     const id = el.dataset.id;
+    if (id !== '__none') {
+      openProject(id);
+      return;
+    }
     const view = ['today', 'settings', 'diary'].includes(prefs.view) ? 'tasks' : prefs.view;
     setPref({ project: prefs.project === id ? '' : id, view });
   },
@@ -172,6 +178,7 @@ function init() {
   setCalendarRender(schedule);
   setWeekRender(schedule);
   setGcalRender(schedule);
+  setProjectRender(schedule);
   setDiaryRender(schedule);
   subscribe(schedule);
   onSyncStatus(() => {
